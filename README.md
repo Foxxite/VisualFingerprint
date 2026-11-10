@@ -115,6 +115,9 @@ The workspace folder is `--home`, `$VFP_HOME`, or `./.vfp`.
 vfp gui
 ```
 
+On Windows you can also double-click `start-gui.bat`. It checks the setup and opens the app without a console window.
+Give it a workspace folder to open a specific workspace: `start-gui.bat "D:\my-workspace"`.
+
 Four tabs:
 
 - **Receivers.** Add or import people.
