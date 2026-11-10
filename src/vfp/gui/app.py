@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         if (Path(d) / "vfp.db").exists():
             QMessageBox.information(self, "Already a workspace", "That folder already holds a workspace. Opening it.")
         else:
-            Workspace.init(d)
+            Workspace.init(d).close()
         self.open_workspace(d)
 
     def open_workspace_dialog(self):

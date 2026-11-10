@@ -263,17 +263,17 @@ class MarkView(QWidget):
         self.go.setEnabled(False)
 
         def job(w: Worker):
-            ws = self.ctx.new_workspace_handle()
-            asset = ws.asset(aid)
-            outs = []
-            for i, name in enumerate(names):
-                w.log(f"Marking for {name} …")
-                outs.append(pipeline.mark_for_receiver(
-                    ws, asset, name, outdir,
-                    progress=(lambda s: w.log(s)) if asset.kind == "video" else None))
-                w.step(i + 1, len(names))
-                w.log(f"  saved {outs[-1].name}")
-            return outs
+            with self.ctx.new_workspace_handle() as ws:
+                asset = ws.asset(aid)
+                outs = []
+                for i, name in enumerate(names):
+                    w.log(f"Marking for {name} …")
+                    outs.append(pipeline.mark_for_receiver(
+                        ws, asset, name, outdir,
+                        progress=(lambda s: w.log(s)) if asset.kind == "video" else None))
+                    w.step(i + 1, len(names))
+                    w.log(f"  saved {outs[-1].name}")
+                return outs
 
         self.worker = Worker(job, self)
         self.worker.logged.connect(self.log.appendPlainText)

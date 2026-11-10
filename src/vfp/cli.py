@@ -21,10 +21,20 @@ def err(msg: str):
     print(msg, file=sys.stderr)
 
 
+_opened: list[Workspace] = []
+
+
+def open_ws(args) -> Workspace:
+    """Open the workspace. It is closed when the command ends (see main)."""
+    ws = Workspace(home_dir(args))
+    _opened.append(ws)
+    return ws
+
+
 def cmd_init(a):
     home = home_dir(a)
     existed = (home / "master.key").exists()
-    Workspace.init(home)
+    Workspace.init(home).close()
     print(f"Workspace ready: {home.resolve()}")
     if not existed:
         print(f"A new secret key was made: {(home / 'master.key').resolve()}")
@@ -32,7 +42,7 @@ def cmd_init(a):
 
 
 def cmd_receivers(a):
-    ws = Workspace(home_dir(a))
+    ws = open_ws(a)
     if a.action == "add":
         for n in a.names:
             ws.add_receiver(n, a.note or "")
@@ -50,7 +60,7 @@ def cmd_receivers(a):
 
 
 def cmd_asset(a):
-    ws = Workspace(home_dir(a))
+    ws = open_ws(a)
     if a.action == "add":
         asset, plan = pipeline.add_asset(ws, a.file, a.name, a.max_receivers, a.colluders,
                                          a.eps, a.strength, a.crf, a.slots)
@@ -75,7 +85,7 @@ def _print_plan(plan, max_receivers, eps):
 
 
 def cmd_mark(a):
-    ws = Workspace(home_dir(a))
+    ws = open_ws(a)
     asset = ws.asset(a.asset)
     targets = [r["name"] for r in ws.receivers()] if a.all else a.to
     if not targets:
@@ -91,7 +101,7 @@ def cmd_mark(a):
 
 
 def cmd_trace(a):
-    ws = Workspace(home_dir(a))
+    ws = open_ws(a)
     r = pipeline.trace_leak(ws, a.file, a.asset)
     if a.json:
         print(json.dumps(asdict(r), indent=2))
@@ -175,6 +185,9 @@ def main(argv=None) -> int:
     except (KeyError, ValueError, FileNotFoundError) as e:
         err(f"error: {e}")
         return 1
+    finally:
+        while _opened:
+            _opened.pop().close()
 
 
 if __name__ == "__main__":

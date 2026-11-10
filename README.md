@@ -134,7 +134,7 @@ Four tabs:
 | Item | Why |
 |---|---|
 | `master.key` in the workspace | Every hidden code comes from it. **Without it you cannot trace a leak.** Back it up. Never share it. |
-| `originals/` in the workspace | Private copies of your unmarked files. Tracing needs them. |
+| `originals/` in the workspace | Private copies of your unmarked files. Tracing needs them. `asset add` makes the copy, so you can delete or move your own file afterwards. To move the workspace, move the whole folder (key, database, and `originals/`). |
 | `vfp.db` | The list of receivers and the copies you issued. |
 
 Never give a receiver the unmarked original. If two receivers get the same file, you cannot tell them apart.

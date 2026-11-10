@@ -174,8 +174,8 @@ class InvestigateView(QWidget):
         self.banner.setText("Reading the hidden code… this can take a minute for long videos.")
 
         def job(w: Worker):
-            ws = self.ctx.new_workspace_handle()
-            return pipeline.trace_leak(ws, leaked, asset)
+            with self.ctx.new_workspace_handle() as ws:
+                return pipeline.trace_leak(ws, leaked, asset)
 
         self.worker = Worker(job, self)
         self.worker.succeeded.connect(self._done)

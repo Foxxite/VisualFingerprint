@@ -55,6 +55,15 @@ class Workspace:
         self.db = sqlite3.connect(self.db_path)
         self.db.row_factory = sqlite3.Row
 
+    def close(self):
+        self.db.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     @classmethod
     def init(cls, home: str | Path) -> "Workspace":
         home = Path(home)
@@ -115,11 +124,26 @@ class Workspace:
         return cur.lastrowid
 
     def set_asset_path(self, asset_id: int, path):
-        self.db.execute("UPDATE assets SET orig_path=? WHERE id=?", (str(path), asset_id))
+        """Remember where the private copy of the original lives, relative to the workspace."""
+        self.db.execute("UPDATE assets SET orig_path=? WHERE id=?",
+                        (f"originals/{Path(path).name}", asset_id))
         self.db.commit()
 
+    def original_path(self, stored: str) -> Path:
+        """Find the private copy of an original.
+
+        Always look inside this workspace's `originals` folder, by file name. That way the
+        workspace can be moved, and the tool can be run from any folder. (Older workspaces
+        stored an absolute path, or a path relative to the folder where the file was added.)
+        """
+        inside = self.home / "originals" / Path(stored.replace("\\", "/")).name
+        if inside.exists():
+            return inside.resolve()
+        old = Path(stored)
+        return old if old.is_absolute() and old.exists() else inside.resolve()
+
     def _asset(self, r) -> Asset:
-        return Asset(r["id"], r["name"], r["kind"], r["orig_path"], r["sha256"],
+        return Asset(r["id"], r["name"], r["kind"], str(self.original_path(r["orig_path"])), r["sha256"],
                      json.loads(r["params"]), r["m"], r["max_receivers"], r["n_colluders"], r["eps"])
 
     def assets(self):
