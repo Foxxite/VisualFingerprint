@@ -57,7 +57,7 @@ def cmd_asset(a):
         print(f"registered asset '{asset.name}' (id {asset.id}, {asset.kind})")
         _print_plan(plan, asset.max_receivers, asset.eps)
     elif a.action == "plan":
-        plan = pipeline.plan_file(a.file, a.max_receivers, a.eps, a.strength, a.crf, a.slots)
+        plan = pipeline.plan_file(a.file, a.max_receivers, a.eps, a.strength, a.crf, a.slots, a.colluders)
         _print_plan(plan, a.max_receivers, a.eps)
     else:
         for x in ws.assets():
@@ -143,7 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--colluders", type=int, default=3, help="design size of a colluder group")
     s.add_argument("--eps", type=float, default=1e-3, help="false-accusation rate")
     s.add_argument("--strength", type=float, help="mark strength (image/video; for audio: alpha)")
-    s.add_argument("--slots", type=int, help="image only: symbols per image (default: as many as fit, up to 1024)")
+    s.add_argument("--slots", type=int, help="symbols per image, or per segment for audio and video "
+                   "(default: chosen automatically; short files pack more symbols)")
     s.add_argument("--crf", type=int, help="video only: x264 quality of marked copies "
                    "(default 16; higher = smaller file, lower fidelity)")
     s.set_defaults(fn=cmd_asset)

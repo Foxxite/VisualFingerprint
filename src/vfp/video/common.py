@@ -41,6 +41,21 @@ def canon_size(width: int, height: int) -> tuple[int, int]:
     return max(16, round(width * s)), max(16, round(height * s))
 
 
+# Symbols per 0.5 s segment. Measured on a 5 s 720p clip against four harsh attacks:
+# up to 256 all were still traced; at 512 one failed (bit accuracy about 0.61).
+VIDEO_NSLOTS_MAX = 256
+
+
+def auto_nslots(info: VideoInfo, p: VideoParams, target: int) -> int:
+    """Symbols per segment so a clip of this length reaches `target` symbols.
+
+    Long videos keep the default. Short videos pack more symbols, up to a cap for reliability.
+    """
+    nseg = ceil(info.nframes / seg_frames(info, p)) + 1
+    k = -(-ceil(target / nseg) // 8) * 8              # round up to a multiple of 8
+    return int(min(max(k, p.nslots), VIDEO_NSLOTS_MAX))
+
+
 def effective_strength(width: int, height: int, p: VideoParams) -> float:
     """A coarser mark is more visible at equal amplitude, so big frames get less."""
     cw, _ = canon_size(width, height)

@@ -29,6 +29,7 @@ Details:
 | Audio | Scales each time-frequency cell of the STFT by a small keyed amount (about 5%, 300 Hz to 8 kHz). The mark follows the signal. |
 | Alignment | Finds the crop, scale, rotation, time offset, and frame rate of the leak before it reads the mark. |
 | Detection | Compares the leak with your original (this is called *informed* detection). That makes it much stronger than reading a mark with no reference. |
+| Accusation | Scores every receiver. The threshold uses the exact weight of the symbols that were read, so it adapts to short or damaged leaks. |
 
 The mark is built from your secret key. The database stores no secrets.
 
@@ -101,7 +102,7 @@ LEAKER: carol
 | `--colluders` | Colluder group size the code is designed for. | 3 |
 | `--eps` | Chance of accusing an innocent receiver. | 0.001 |
 | `--strength` | Mark strength. Higher = more robust, easier to notice. (Audio: the relative size, 0.05.) | 3.0 |
-| `--slots` | Images only: symbols per image. | as many as fit, up to 1024 |
+| `--slots` | Symbols per image, or per segment for audio and video. | automatic: short files pack more symbols |
 | `--crf` | Video only: x264 quality of marked copies. Higher = smaller file, lower fidelity. | 16 |
 
 The workspace folder is `--home`, `$VFP_HOME`, or `./.vfp`.
@@ -175,13 +176,37 @@ Colluders blended their copies, then saved them as ordinary files. The tool accu
 |---|---|---|---|
 | Song, 173 s | average, random splicing, min-abs | 2, 3, 4, 6 | 54 of 54 trials caught |
 | Video, 20 s | average, chunk splicing, frame mixing | 2, 3 | 18 of 18 caught |
-| Photo, 1024 symbols | average, min, max, median, pixel mix, tile mix | 2, 3 | 72 of 72 caught |
-| Photo, 256 symbols | the same six | 2, 3 | groups of 2: 83–100%, groups of 3: 0–17% |
-| Audio, 10 s | three | 2, 3 | groups of 2: always, groups of 3: 60–80% |
+| Photo, 1600 symbols (v1.1 default) | average, min, max, median, pixel mix, tile mix | 3, 4 | 60 of 60 caught |
+| Audio, 10 s (v1.1 default, 208 symbols/s) | average, random splicing, min-abs | 2, 3, 4 | 72 of 72 caught |
 
-**More symbols means stronger tracing.** Short or small files carry few symbols.
+**More symbols means stronger tracing.** Short or small files carry few symbols, so v1.1 packs more
+symbols into them. For comparison, before v1.1 the same 10 s audio clip (384 symbols) lost groups of 3
+in 20–40% of trials, and a photo with 256 symbols lost almost every group of 3.
 `vfp asset plan FILE` shows the code length and the colluder group size the theory guarantees.
 The theory is cautious. Real files did better than it promises.
+
+### How v1.1 makes short clips stronger
+
+Two changes, both measured on the test files:
+
+1. **Exact accusation threshold.** The threshold now follows the real weight of the symbols that were read.
+   When a leak is short, damaged, or partly lost, the threshold drops with it. The chance of accusing an
+   innocent receiver stays at or below the level you chose (checked by simulation).
+   On the 10 s clip this alone raised success against groups of 3 from 43% to about 59%.
+2. **Symbol density that fits the clip.** The tool asks the theory how many symbols the plan needs
+   (receivers, colluder group size, false-accusation rate). It packs that many symbols into the file,
+   up to a limit set by measurement. Long files keep the default and stay strong per symbol.
+
+| Media | Default | Most the tool packs | Why that limit |
+|---|---|---|---|
+| Audio | 32 symbols per 1 s segment | 256 | bit accuracy is still about 0.78 on harsh attacks |
+| Video | 64 symbols per 0.5 s segment | 256 | all 4 harsh attacks still traced; at 512 one failed |
+| Image | up to what fits | 12 blocks per symbol | 1600 symbols on a 1.2 MP photo passed every attack |
+
+The price: each symbol gets a smaller share of the file, so per-symbol accuracy falls
+(for audio, from 0.94 at 32 per segment to 0.78 at 256, over three harsh attacks).
+More symbols still win, because they add up faster than the accuracy falls.
+Set `--slots N` to choose the density yourself.
 
 ---
 

@@ -50,8 +50,9 @@ class AddFileDialog(QDialog):
         self.strength.setToolTip("Higher = survives more damage but is easier to see or hear.")
         self.slots = QSpinBox(minimum=0, maximum=4096)
         self.slots.setSpecialValueText("Automatic")
-        self.slots.setToolTip("Images only. More symbols make a group of colluders easier to catch, "
-                              "but each symbol gets less of the image.")
+        self.slots.setToolTip("Per image, or per segment for audio and video. More symbols make a group "
+                              "of colluders easier to catch, but each symbol gets less of the file. "
+                              "Automatic packs more into short files.")
         self.crf = QSpinBox(minimum=0, maximum=40)
         self.crf.setSpecialValueText("Default (16)")
         self.crf.setToolTip("Video only. Higher = smaller marked file, lower fidelity.")
@@ -60,7 +61,7 @@ class AddFileDialog(QDialog):
         form.addRow("Wrongly accused", self.eps)
         form.addRow("Mark strength", self.strength)
         form.addRow("Video quality (CRF)", self.crf)
-        form.addRow("Symbols per image", self.slots)
+        form.addRow("Symbols per image / segment", self.slots)
 
         self.preview = QLabel("Choose a file to see how much it can carry.")
         self.preview.setWordWrap(True)
@@ -98,14 +99,14 @@ class AddFileDialog(QDialog):
         ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         p = self.path.text().strip()
         self.crf.setEnabled(p.lower().endswith(tuple(pipeline.VIDEO_EXT)))
-        self.slots.setEnabled(p.lower().endswith(tuple(pipeline.IMAGE_EXT)))
         if not p or not Path(p).is_file():
             self.preview.setText("Choose a file to see how much it can carry.")
             ok.setEnabled(False)
             return
         try:
             o = self.options()
-            plan = pipeline.plan_file(p, o["max_receivers"], o["eps"], o["strength"], o["crf"], o["slots"])
+            plan = pipeline.plan_file(p, o["max_receivers"], o["eps"], o["strength"], o["crf"], o["slots"],
+                                      o["n_colluders"])
         except Exception as e:
             self.preview.setText(f"This file cannot be used: {e}")
             ok.setEnabled(False)

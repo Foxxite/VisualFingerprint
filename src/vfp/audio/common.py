@@ -35,6 +35,20 @@ def capacity(duration: float, p: AudioParams) -> int:
     return (ceil(duration / p.seg_seconds) + 1) * p.nslots
 
 
+AUDIO_NSLOTS_MAX = 256     # symbols per 1 s segment. Measured: bit accuracy is still ~0.78 here.
+
+
+def auto_nslots(duration: float, p: AudioParams, target: int) -> int:
+    """Symbols per segment so a clip of this length reaches `target` symbols.
+
+    Long audio keeps the default (fewer, stronger symbols). Short audio packs more symbols,
+    because a code needs enough symbols to tell colluders apart. Capped for reliability.
+    """
+    nseg = ceil(duration / p.seg_seconds) + 1
+    k = -(-ceil(target / nseg) // 8) * 8              # round up to a multiple of 8
+    return int(min(max(k, p.nslots), AUDIO_NSLOTS_MAX))
+
+
 def seg_layout(seed: int, seg: int, nframes: int, nbins: int, nslots: int):
     """Keyed +-1 pattern and keyed time-frequency cell -> slot map for one segment."""
     rng = np.random.default_rng([int(seed), 0xA0D10, seg])

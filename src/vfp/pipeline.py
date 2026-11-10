@@ -17,15 +17,17 @@ import cv2
 import numpy as np
 
 from .audio.common import AudioParams
+from .audio.common import auto_nslots as audio_auto_nslots
 from .audio.common import capacity as audio_capacity
 from .audio.detect import detect_audio
 from .audio.embed import embed_audio
 from .audio.ffio import probe_audio
-from .codes.tardos import TardosCode, accusation_threshold
+from .codes.tardos import TardosCode, accusation_threshold, required_length
 from .image.common import DEFAULT_SLOTS, ImageParams, usable_slots
 from .image.detect import detect_image
 from .image.embed import embed_image
 from .video.common import VideoParams
+from .video.common import auto_nslots as video_auto_nslots
 from .video.common import capacity as video_capacity
 from .video.detect import detect_video
 from .video.embed import embed_video
@@ -89,26 +91,46 @@ class Plan:
     notes: list = field(default_factory=list)
 
 
-def plan_file(path, max_receivers=1000, eps=1e-3, strength=None, crf=None, slots=None) -> Plan:
+def plan_file(path, max_receivers=1000, eps=1e-3, strength=None, crf=None, slots=None,
+              n_colluders=3) -> Plan:
+    """Decide how the file will carry the code.
+
+    Unless `slots` is given, the tool chooses how many symbols to pack. A short clip packs
+    more symbols per second than a long one, so it can still tell colluders apart.
+    `slots` means symbols per image (images) or per segment (audio, video).
+    """
     kind = kind_of(path)
     notes = []
+    target = required_length(max_receivers, n_colluders, eps)     # symbols the theory asks for
     if kind == "image":
         img = read_image(path)
         h, w = img.shape[:2]
-        want = slots or DEFAULT_SLOTS
-        slots = usable_slots(h, w, wanted=want)
-        if slots < want:
-            notes.append(f"Image ({w}x{h}) is too small for {want} symbols: only {slots} fit. "
-                         f"Tracing is weaker.")
-        p = ImageParams(nslots=slots, **({"strength": strength} if strength else {}))
-        m = slots
+        want = slots or max(DEFAULT_SLOTS, target)
+        n = usable_slots(h, w, wanted=want)
+        if n < want:
+            notes.append(f"Image ({w}x{h}) holds {n} symbols (wanted {want}). "
+                         + ("Tracing is weaker." if n < target else ""))
+        p = ImageParams(nslots=n, **({"strength": strength} if strength else {}))
+        m = n
     elif kind == "video":
         kw = {**({"strength": strength} if strength else {}), **({"crf": crf} if crf is not None else {})}
         p = VideoParams(**kw)
-        m = video_capacity(probe(str(path)), p)
+        info = probe(str(path))
+        n = slots or video_auto_nslots(info, p, target)
+        p = VideoParams(**{**asdict(p), "nslots": n})
+        m = video_capacity(info, p)
+        if n > VideoParams().nslots:
+            notes.append(f"Short video: packing {n} symbols per segment ({n / p.seg_seconds:.0f} per second) "
+                         f"to reach {m} symbols.")
     else:
         p = AudioParams(**({"alpha": strength} if strength else {}))
-        m = audio_capacity(probe_audio(str(path)).duration, p)
+        dur = probe_audio(str(path)).duration
+        n = slots or audio_auto_nslots(dur, p, target)
+        p = AudioParams(**{**asdict(p), "nslots": n})
+        m = audio_capacity(dur, p)
+        if n > AudioParams().nslots:
+            notes.append(f"Short audio: packing {n} symbols per segment ({n / p.seg_seconds:.0f} per second) "
+                         f"to reach {m} symbols.")
     g = supported_colluders(m, max_receivers, eps)
     if g == 0:
         notes.append("Enough for one leaker. The theory does not guarantee tracing a group of colluders "
@@ -121,7 +143,7 @@ def plan_file(path, max_receivers=1000, eps=1e-3, strength=None, crf=None, slots
 def add_asset(ws: Workspace, path, name=None, max_receivers=1000, n_colluders=3, eps=1e-3,
               strength=None, crf=None, slots=None) -> tuple[Asset, Plan]:
     path = Path(path)
-    plan = plan_file(path, max_receivers, eps, strength, crf, slots)
+    plan = plan_file(path, max_receivers, eps, strength, crf, slots, n_colluders)
     name = name or path.stem
     aid = ws.add_asset(name, plan.kind, path, sha256(path), plan.params, plan.m,
                        max_receivers, n_colluders, eps)
@@ -248,7 +270,7 @@ def _trace_one(ws: Workspace, a: Asset, leaked: Path) -> TraceResult:
                             "or changed too much.")
     code = _code(ws, a, max(r["user_index"] for r in issued) + 1)
     scores = code.scores(det.bits, det.confidence)
-    thr = accusation_threshold(a.max_receivers, a.m, a.eps)
+    thr = accusation_threshold(a.max_receivers, a.m, a.eps, weights=det.confidence)
     names = {r["user_index"]: r["name"] for r in issued}
     ranking = sorted(((names[i], float(scores[i])) for i in names), key=lambda t: -t[1])
     flagged = [n for n, s in ranking if s > thr]

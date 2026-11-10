@@ -83,13 +83,20 @@ class TardosCode:
         return [(int(j), float(s[j])) for j in order], z
 
 
-def accusation_threshold(n_users: int, length: int, eps1: float = 1e-3) -> float:
+MIN_EVIDENCE = 25.0    # smallest sum of squared weights we will accuse on (about 25 reliable symbols)
+
+
+def accusation_threshold(n_users: int, length: int, eps1: float = 1e-3,
+                         weights: np.ndarray | None = None) -> float:
     """Threshold so an innocent user passes with probability <= eps1 overall.
 
-    An innocent score has mean 0 and variance about `length` (each term has
-    unit variance under the symmetric score). Gaussian tail + union bound
-    over n users.
+    An innocent score is a sum of terms with mean 0. A term for a symbol read with weight w
+    has variance w^2 (variance 1 when w = 1). So the exact spread is sqrt(sum of w^2), which
+    is smaller than sqrt(length) when some symbols are lost or unreliable. Passing `weights`
+    uses this exact spread. Without it, every symbol counts as fully reliable.
+    Gaussian tail + union bound over n users.
     """
     from scipy.stats import norm
 
-    return float(sqrt(length) * norm.isf(eps1 / max(n_users, 1)))
+    var = float(length) if weights is None else float(np.sum(np.square(weights)))
+    return float(sqrt(max(var, MIN_EVIDENCE)) * norm.isf(eps1 / max(n_users, 1)))
