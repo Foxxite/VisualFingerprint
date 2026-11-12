@@ -366,6 +366,8 @@ async fn run(cli: Cli) -> Result<(), String> {
         Cmd::Token { action } => {
             match action {
                 TokenCmd::New { role, label } => {
+                    std::fs::create_dir_all(&data)
+                        .map_err(|e| format!("cannot create data folder {}: {e}", data.display()))?;
                     let t = new_token(&data, &role, &label)?;
                     println!("New {role} token (shown once, copy it now):\n\n  {t}\n");
                 }

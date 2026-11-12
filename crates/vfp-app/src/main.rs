@@ -17,8 +17,23 @@ fn e<E: std::fmt::Display>(x: E) -> String {
 }
 
 /// The workspace folder of this app. It also holds `server.json` when the user links a server.
-fn home(app: &AppHandle) -> Res<PathBuf> {
+/// Small pointer file in the app data folder. It holds the workspace folder the user chose.
+fn pointer(app: &AppHandle) -> Res<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(e)?.join("workspace-path.txt"))
+}
+
+fn default_home(app: &AppHandle) -> Res<PathBuf> {
     Ok(app.path().app_data_dir().map_err(e)?.join("workspace"))
+}
+
+fn home(app: &AppHandle) -> Res<PathBuf> {
+    if let Ok(s) = std::fs::read_to_string(pointer(app)?) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Ok(PathBuf::from(s));
+        }
+    }
+    default_home(app)
 }
 
 fn backend(app: &AppHandle) -> Res<Box<dyn Backend + Send>> {
@@ -59,7 +74,22 @@ fn app_state(app: AppHandle) -> Res<State> {
 }
 
 #[tauri::command]
-fn setup_local(app: AppHandle) -> Res<String> {
+fn default_workspace(app: AppHandle) -> Res<String> {
+    Ok(default_home(&app)?.display().to_string())
+}
+
+/// `folder` is where the originals and the key are kept. `None` means the default place.
+#[tauri::command]
+fn setup_local(app: AppHandle, folder: Option<String>) -> Res<String> {
+    if let Some(f) = folder.filter(|f| !f.trim().is_empty()) {
+        let p = PathBuf::from(f.trim());
+        std::fs::create_dir_all(&p).map_err(e)?;
+        let ptr = pointer(&app)?;
+        if let Some(d) = ptr.parent() {
+            std::fs::create_dir_all(d).map_err(e)?;
+        }
+        std::fs::write(ptr, p.display().to_string()).map_err(e)?;
+    }
     let h = home(&app)?;
     Workspace::init(&h).map_err(e)?;
     Ok(h.join("master.key").display().to_string())
@@ -170,6 +200,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app_state,
             setup_local,
+            default_workspace,
             connect_server,
             disconnect_server,
             export_key,

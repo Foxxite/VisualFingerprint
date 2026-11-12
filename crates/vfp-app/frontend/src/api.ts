@@ -14,7 +14,8 @@ export interface TraceResult {
 
 export const api = {
   state: () => invoke<AppState>("app_state"),
-  setupLocal: () => invoke<string>("setup_local"),
+  setupLocal: (folder: string | null) => invoke<string>("setup_local", { folder }),
+  defaultWorkspace: () => invoke<string>("default_workspace"),
   connect: (url: string, token: string) => invoke<string>("connect_server", { url, token }),
   disconnect: () => invoke<void>("disconnect_server"),
   exportKey: (dest: string) => invoke<void>("export_key", { dest }),

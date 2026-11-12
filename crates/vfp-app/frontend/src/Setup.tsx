@@ -1,16 +1,27 @@
 import { useState } from "react";
-import { api, errText, pickSave } from "./api";
+import { api, errText, pickFolder, pickSave } from "./api";
 
 export default function Setup({ onDone }: { onDone: () => void }) {
-  const [step, setStep] = useState<"choose" | "server" | "backup">("choose");
+  const [step, setStep] = useState<"choose" | "folder" | "server" | "backup">("choose");
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const [folder, setFolder] = useState("");
+  const [dflt, setDflt] = useState("");
+
+  const toFolder = async () => {
+    setDflt(await api.defaultWorkspace());
+    setStep("folder");
+  };
+  const browse = async () => {
+    const f = await pickFolder("Where should your originals and key be stored?");
+    if (f) setFolder(f);
+  };
   const local = async () => {
     try {
-      await api.setupLocal();
+      await api.setupLocal(folder || null);
       setStep("backup");
     } catch (x) {
       setMsg(errText(x));
@@ -48,7 +59,7 @@ export default function Setup({ onDone }: { onDone: () => void }) {
 
         {step === "choose" && (
           <div className="grid2">
-            <button className="card choice" onClick={local}>
+            <button className="card choice" onClick={toFolder}>
               <h2>This device only</h2>
               <span className="muted">Your files and your secret key stay on this computer. Works without internet.</span>
             </button>
@@ -56,6 +67,28 @@ export default function Setup({ onDone }: { onDone: () => void }) {
               <h2>Connect to my server</h2>
               <span className="muted">Use one workspace on all your devices. Originals stay on the server.</span>
             </button>
+          </div>
+        )}
+
+        {step === "folder" && (
+          <div className="card">
+            <h2>Where should your originals be stored?</h2>
+            <p>
+              The app keeps one copy of each original here, and your secret key. Pick a folder with enough space. A folder that
+              is backed up is best.
+            </p>
+            <code>{folder || dflt}</code>
+            <div className="row" style={{ marginTop: 14 }}>
+              <button className="secondary" onClick={browse}>
+                Choose a folder…
+              </button>
+              <button className="primary" onClick={local}>
+                Use this folder
+              </button>
+              <button className="secondary" onClick={() => setStep("choose")}>
+                Back
+              </button>
+            </div>
           </div>
         )}
 
