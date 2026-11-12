@@ -193,3 +193,17 @@ pub fn gaussian(p: &Plane, sigma: f64, radius: usize) -> Plane {
     }
     out
 }
+
+/// Shrink a plane to at most `max_px` pixels (low-pass first). Returns the small plane and the
+/// matrix that maps full-size coordinates to small coordinates (identity if no shrink).
+pub fn downscale(p: &Plane, max_px: usize) -> (Plane, Mat3) {
+    if p.h * p.w <= max_px {
+        return (p.clone(), IDENTITY);
+    }
+    let f = ((p.h * p.w) as f64 / max_px as f64).sqrt();
+    let (nh, nw) = (((p.h as f64 / f).round() as usize).max(1), ((p.w as f64 / f).round() as usize).max(1));
+    let (fx, fy) = (p.w as f64 / nw as f64, p.h as f64 / nh as f64);
+    let b = gaussian(p, 0.5 * fx.max(fy), (1.5 * fx.max(fy)).ceil() as usize + 1);
+    let small = Plane::from_fn(nh, nw, |x, y| bilinear(&b, (x as f64 + 0.5) * fx - 0.5, (y as f64 + 0.5) * fy - 0.5));
+    (small, [[1.0 / fx, 0.0, 0.5 / fx - 0.5], [0.0, 1.0 / fy, 0.5 / fy - 0.5], [0.0, 0.0, 1.0]])
+}

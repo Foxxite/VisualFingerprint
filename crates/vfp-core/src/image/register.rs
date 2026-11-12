@@ -130,46 +130,63 @@ fn ransac_homography(src: &[Pt], dst: &[Pt], thresh: f64) -> Option<(Mat3, usize
 
 // ---------------------------------------------------------------- ECC
 /// Sub-pixel refinement (Evangelidis & Psarakis ECC, homography model).
-/// Returns W with `input(W x) ~ template(x)`; `mask` is in `input` coordinates.
-fn ecc_homography(template: &Plane, input: &Plane, mask: &[bool], iters: usize, eps: f64) -> Option<Mat3> {
-    let (h, w) = (template.h, template.w);
+///
+/// `w0` maps template coordinates to input coordinates (normalised so `w0[2][2] == 1`).
+/// Returns the refined map. Only every `stride`-th template pixel is used, and the input is
+/// sampled at the warped position, so cost does not grow with the image size.
+fn ecc_homography(template: &Plane, input: &Plane, w0: &Mat3, iters: usize, eps: f64, stride: usize) -> Option<Mat3> {
     let tmpl = gaussian(template, 1.1, 2);
     let inp = gaussian(input, 1.1, 2);
-    let gx = Plane::from_fn(h, w, |x, y| 0.5 * (inp.clamped(x as isize + 1, y as isize) - inp.clamped(x as isize - 1, y as isize)));
-    let gy = Plane::from_fn(h, w, |x, y| 0.5 * (inp.clamped(x as isize, y as isize + 1) - inp.clamped(x as isize, y as isize - 1)));
-    let mut wm = IDENTITY;
+    let mut wm = *w0;
+    let margin = 5.0;
+    let (ymax, xmax) = (input.h as f64 - 1.0 - margin, input.w as f64 - 1.0 - margin);
+    let samples: Vec<(usize, usize)> = (0..template.h)
+        .step_by(stride)
+        .flat_map(|y| (0..template.w).step_by(stride).map(move |x| (x, y)))
+        .collect();
+
     for _ in 0..iters {
-        let iw = warp_plane(&inp, &wm, h, w, false);
-        let gxw = warp_plane(&gx, &wm, h, w, false);
-        let gyw = warp_plane(&gy, &wm, h, w, false);
-        let mk = warp_inside(h, w, Some(mask), &wm, h, w);
-        let idx: Vec<usize> = (0..h * w).filter(|&i| mk[i]).collect();
-        if idx.len() < 200 {
+        // per sample: template value, warped input value, Jacobian row
+        let mut rows: Vec<(f64, f64, [f64; 8])> = Vec::with_capacity(samples.len());
+        for &(x, y) in &samples {
+            let (xf, yf) = (x as f64, y as f64);
+            let d = wm[2][0] * xf + wm[2][1] * yf + 1.0;
+            if d.abs() < 1e-9 {
+                continue;
+            }
+            let px = (wm[0][0] * xf + wm[0][1] * yf + wm[0][2]) / d;
+            let py = (wm[1][0] * xf + wm[1][1] * yf + wm[1][2]) / d;
+            if px < margin || py < margin || px > xmax || py > ymax {
+                continue;
+            }
+            let iv = bilinear(&inp, px, py) as f64;
+            let gx = 0.5 * (bilinear(&inp, px + 1.0, py) - bilinear(&inp, px - 1.0, py)) as f64;
+            let gy = 0.5 * (bilinear(&inp, px, py + 1.0) - bilinear(&inp, px, py - 1.0)) as f64;
+            let (gxv, gyv) = (gx / d, gy / d);
+            let g = -(gxv * px + gyv * py);
+            rows.push((
+                tmpl.d[y * template.w + x] as f64,
+                iv,
+                [gxv * xf, gxv * yf, gxv, gyv * xf, gyv * yf, gyv, g * xf, g * yf],
+            ));
+        }
+        if rows.len() < 200 {
             return None;
         }
-        let n = idx.len() as f64;
-        let mt = idx.iter().map(|&i| tmpl.d[i] as f64).sum::<f64>() / n;
-        let mi = idx.iter().map(|&i| iw.d[i] as f64).sum::<f64>() / n;
+        let n = rows.len() as f64;
+        let mt = rows.iter().map(|r| r.0).sum::<f64>() / n;
+        let mi = rows.iter().map(|r| r.1).sum::<f64>() / n;
 
-        let mut jac: Vec<[f64; 8]> = Vec::with_capacity(idx.len());
         let (mut hess, mut ip, mut tp) = (SMatrix::<f64, 8, 8>::zeros(), SVector::<f64, 8>::zeros(), SVector::<f64, 8>::zeros());
         let (mut corr, mut inorm) = (0f64, 0f64);
-        for &i in &idx {
-            let (x, y) = ((i % w) as f64, (i / w) as f64);
-            let d = wm[2][0] * x + wm[2][1] * y + 1.0;
-            let hx = (wm[0][0] * x + wm[0][1] * y + wm[0][2]) / d;
-            let hy = (wm[1][0] * x + wm[1][1] * y + wm[1][2]) / d;
-            let (gxv, gyv) = (gxw.d[i] as f64 / d, gyw.d[i] as f64 / d);
-            let g = -(gxv * hx + gyv * hy);
-            let j = [gxv * x, gxv * y, gxv, gyv * x, gyv * y, gyv, g * x, g * y];
-            let (t, im) = (tmpl.d[i] as f64 - mt, iw.d[i] as f64 - mi);
-            let jv = SVector::<f64, 8>::from_row_slice(&j);
+        for (t, i, j) in &rows {
+            let (t, im) = (t - mt, i - mi);
+            let jv = SVector::<f64, 8>::from_row_slice(j);
             hess += jv * jv.transpose();
             ip += jv * im;
             tp += jv * t;
             corr += t * im;
             inorm += im * im;
-            jac.push(j);
         }
         let hinv = hess.try_inverse()?;
         let iph = hinv * ip;
@@ -180,9 +197,8 @@ fn ecc_homography(template: &Plane, input: &Plane, mask: &[bool], iters: usize, 
         }
         let lambda = lambda_n / lambda_d;
         let mut ep = SVector::<f64, 8>::zeros();
-        for (k, &i) in idx.iter().enumerate() {
-            let e = lambda * (tmpl.d[i] as f64 - mt) - (iw.d[i] as f64 - mi);
-            ep += SVector::<f64, 8>::from_row_slice(&jac[k]) * e;
+        for (t, i, j) in &rows {
+            ep += SVector::<f64, 8>::from_row_slice(j) * (lambda * (t - mt) - (i - mi));
         }
         let delta = hinv * ep;
         if !delta.iter().all(|v| v.is_finite()) {
@@ -203,21 +219,60 @@ fn ecc_homography(template: &Plane, input: &Plane, mask: &[bool], iters: usize, 
     Some(wm)
 }
 
+fn normalised(m: &Mat3) -> Mat3 {
+    let k = m[2][2];
+    let mut o = *m;
+    for r in o.iter_mut() {
+        for v in r.iter_mut() {
+            *v /= k;
+        }
+    }
+    o
+}
+
 // ---------------------------------------------------------------- top level
-/// Mean absolute gray error of `leaked` warped into the original grid. 1e9 if too little overlap.
-fn warp_err(lg: &Plane, og: &Plane, m: &Mat3) -> f64 {
-    let (h, w) = (og.h, og.w);
-    let a = warp_plane(lg, m, h, w, false);
-    let inside = warp_inside(lg.h, lg.w, None, m, h, w);
-    let cnt = inside.iter().filter(|&&b| b).count();
-    if (cnt as f64) < 0.2 * (h * w) as f64 {
+/// Largest image (pixels) the feature and first ECC stage work on.
+const COARSE_PX: usize = 2_000_000;
+/// ECC iterations at full size after a reduced-size pass.
+const FINE_ITERS: usize = 8;
+/// Pixels used for error checks and the full-size ECC pass.
+const CHECK_PX: usize = 1_500_000;
+
+fn stride_for(px: usize) -> usize {
+    ((px as f64 / CHECK_PX as f64).sqrt().ceil() as usize).max(1)
+}
+
+/// Mean absolute gray error of `leaked` warped into the original grid, on every `stride`-th pixel.
+/// 1e9 if less than 20% of the grid lands inside the leak.
+fn warp_err(lg: &Plane, og: &Plane, m: &Mat3, stride: usize) -> f64 {
+    let (mut sum, mut cnt, mut total) = (0f64, 0usize, 0usize);
+    for y in (0..og.h).step_by(stride) {
+        for x in (0..og.w).step_by(stride) {
+            total += 1;
+            let Some((sx, sy)) = project(m, x as f64, y as f64) else { continue };
+            let (ix, iy) = (sx.round(), sy.round());
+            if ix < 0.0 || iy < 0.0 || ix >= lg.w as f64 || iy >= lg.h as f64 {
+                continue;
+            }
+            let v = bilinear(lg, sx, sy).round().clamp(0.0, 255.0);
+            sum += (v - og.d[y * og.w + x]).abs() as f64;
+            cnt += 1;
+        }
+    }
+    if (cnt as f64) < 0.2 * total as f64 {
         return 1e9;
     }
-    let sum: f64 = (0..h * w).filter(|&i| inside[i]).map(|i| (a.d[i].round().clamp(0.0, 255.0) - og.d[i]).abs() as f64).sum();
     sum / cnt as f64
 }
 
 pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
+    let t0 = std::time::Instant::now();
+    let trace = std::env::var_os("VFP_TRACE").is_some();
+    let lap = |what: &str| {
+        if trace {
+            eprintln!("    [register] {what}: {:.2}s", t0.elapsed().as_secs_f64())
+        }
+    };
     let (lg, og) = (gray_plane(leaked), gray_plane(original));
     let (h, w) = (og.h, og.w);
     let id_err = (lg.h == og.h && lg.w == og.w)
@@ -228,8 +283,13 @@ pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
         }
     }
 
+    // The coarse stage runs on reduced copies (<= COARSE_PX). A 12 MP photo would be too slow otherwise.
+    let ((lgs, al), (ogs, ao)) = (downscale(&lg, COARSE_PX), downscale(&og, COARSE_PX));
+    let reduced = lgs.d.len() != lg.d.len() || ogs.d.len() != og.d.len();
+
     // coarse: feature matches + RANSAC (leaked -> original)
-    let (fl, fo) = (detect(&lg), detect(&og));
+    let (fl, fo) = (detect(&lgs), detect(&ogs));
+    lap("features");
     let mut hm = None;
     if fl.pts.len() > 12 && fo.pts.len() > 12 {
         let good = match_ratio(&fl, &fo, 0.75);
@@ -245,22 +305,35 @@ pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
         }
         let (sx, sy) = (lg.w as f64 / w as f64, lg.h as f64 / h as f64);
         let m = [[sx, 0.0, 0.5 * sx - 0.5], [0.0, sy, 0.5 * sy - 0.5], [0.0, 0.0, 1.0]];
-        let err = warp_err(&lg, &og, &m);
+        let err = warp_err(&lg, &og, &m, stride_for(h * w));
         return Registration { m: Some(m), method: "resize-fallback", err, inliers: 0 };
     };
-    let mut m = inv(&hmat).unwrap_or(IDENTITY);
+    lap("match+ransac");
+    let mut m = normalised(&inv(&hmat).unwrap_or(IDENTITY));
 
-    // fine: ECC refinement, kept only if it lowers the error
-    let pre = warp_plane(&lg, &m, h, w, false);
-    let inside = warp_inside(lg.h, lg.w, None, &m, h, w);
-    let pre_mask = erode(&inside, h, w, 9);
-    if let Some(w2) = ecc_homography(&og, &pre, &pre_mask, 60, 1e-6) {
-        let cand = mul(&m, &w2);
-        if warp_err(&lg, &og, &cand) < warp_err(&lg, &og, &m) {
+    // ECC refinement on the reduced pair, kept only if it lowers the error
+    let s_small = stride_for(ogs.h * ogs.w);
+    if let Some(cand) = ecc_homography(&ogs, &lgs, &m, 60, 1e-6, 1) {
+        if warp_err(&lgs, &ogs, &cand, s_small) < warp_err(&lgs, &ogs, &m, s_small) {
             m = cand;
         }
     }
-    let err = warp_err(&lg, &og, &m);
+    lap("ecc (coarse)");
+
+    let stride = stride_for(h * w);
+    if reduced {
+        // back to full-size coordinates, then a short ECC pass at full size for sub-pixel accuracy
+        if let Some(ail) = inv(&al) {
+            m = normalised(&mul(&ail, &mul(&m, &ao)));
+        }
+        if let Some(cand) = ecc_homography(&og, &lg, &m, FINE_ITERS, 1e-6, stride) {
+            if warp_err(&lg, &og, &cand, stride) < warp_err(&lg, &og, &m, stride) {
+                m = cand;
+            }
+        }
+        lap("ecc (full size)");
+    }
+    let err = warp_err(&lg, &og, &m, stride);
     if let Some(e) = id_err {
         if err >= 0.8 * e {
             return Registration { m: None, method: "identity", err: e, inliers: inl };
