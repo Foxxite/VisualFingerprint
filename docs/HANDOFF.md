@@ -246,6 +246,10 @@ I read search summaries and abstracts, not full papers.
 
 ## 13. Security and privacy
 
+Encryption has two server modes (Protected, Zero-knowledge) and an encrypted local workspace. Read `docs/SECURITY.md` first.
+Open items: `rekey` (Protected to Zero-knowledge), a cache size limit, rollback detection, built-in TLS, and a hand test of the app in Zero-knowledge mode.
+
+
 - **`master.key` is the secret.** It is created by `vfp init` in the workspace folder. Without it, no leak can be traced. Back it up. Never share it or commit it.
 - `.gitignore` excludes `master.key`, `*.key`, `vfp.db`, `.vfp/`, `demo-ws/`, `demo-out/`, `samples/`, `test-media/`, `.venv/`. The index holds no key files (checked at v1 and again today).
 - **`demo-ws/` exists locally and holds a real test key.** It is ignored by git. Delete it if it is no longer needed.

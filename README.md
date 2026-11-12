@@ -86,7 +86,7 @@ LEAKER: carol
 | Command | What it does |
 |---|---|
 | `vfp init` | Make an encrypted workspace. It asks for a passphrase (strong, 64 bits or more). Use `--plain` for no encryption. |
-| `vfp vault init` / `status` / `passwd` / `generate` | Encrypt an existing workspace (or a new server), check it, change the passphrase, or get a strong one. Set `VFP_PASSPHRASE_FILE` to skip the prompt. There is no recovery if you lose the passphrase. |
+| `vfp vault init` / `status` / `passwd` / `generate` | Encrypt an existing workspace (or a new server), check it, change the passphrase, or get a strong one. Add `--zero-knowledge` on a server so it never gets your key. Set `VFP_PASSPHRASE_FILE` to skip the prompt. There is no recovery if you lose the passphrase. |
 | `vfp receivers add NAME…` / `import FILE` / `list` | Manage receivers. Import reads one `name[,note]` per line. |
 | `vfp asset plan FILE` | Show how much a file can carry. Changes nothing. |
 | `vfp asset add FILE` | Register an original file. |

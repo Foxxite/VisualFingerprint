@@ -68,3 +68,12 @@ Marking and tracing audio or video needs a plain file for FFmpeg. It goes in a p
 - Changing the passphrase uses an admin token to replace `vault.json`. The server cannot check the key, so it trusts that token.
 - If vault creation is interrupted, the server vault is incomplete. Start again on a fresh data folder.
 - Moving a Protected server to Zero-knowledge (rekey) is not built yet. The server has seen the old key, so make a new vault and copy the data.
+
+## Review notes (final pass)
+
+- Blob ids cannot be paths: only `[A-Za-z0-9._-]`, no leading dot. A test sends `..%2Fvault.json` and gets 400.
+- The `If-Match` check and the rename run under one lock, so two uploads cannot both win.
+- Half-received blobs (`.tmp-*`) are deleted at start-up.
+- `vault.json` can come from a server you do not trust. The client now refuses key-derivation settings that would
+  exhaust memory or time (more than 1 GiB, or more than 16 passes or lanes).
+- A swapped `vault.json` cannot give access to data: the wrong key fails the authenticated decryption.

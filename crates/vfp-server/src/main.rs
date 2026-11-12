@@ -743,6 +743,14 @@ async fn run(cli: Cli) -> Result<(), String> {
             // anything left from an earlier run (for example after a crash) is wiped
             securetemp::sweep(&data.join("uploads"));
             securetemp::sweep(&data.join("tmp"));
+            // half-received blobs from a crash
+            if let Ok(rd) = std::fs::read_dir(data.join("blobs")) {
+                for e in rd.flatten() {
+                    if e.file_name().to_string_lossy().starts_with(".tmp-") {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
             for d in ["uploads", "marked", "tmp"] {
                 std::fs::create_dir_all(data.join(d)).map_err(|e| e.to_string())?;
             }

@@ -274,6 +274,10 @@ pub struct VaultFile {
 }
 
 fn kek(passphrase: &str, salt: &[u8], p: &KdfParams) -> Result<Key32> {
+    // vault.json may come from a server we do not trust: refuse settings made to exhaust our memory or time
+    if p.m_kib > 1024 * 1024 || p.t > 16 || p.p > 16 {
+        return err("the vault asks for unreasonable key-derivation settings. Refusing to continue.");
+    }
     let params = Params::new(p.m_kib, p.t, p.p, Some(32)).map_err(|e| Error(format!("bad Argon2 settings: {e}")))?;
     let mut out = [0u8; 32];
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
