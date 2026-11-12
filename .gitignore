@@ -17,3 +17,6 @@ demo-leaks/
 marked/
 samples/
 test-media/
+
+# Rust
+target/

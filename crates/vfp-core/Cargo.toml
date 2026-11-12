@@ -1,0 +1,14 @@
+[package]
+name = "vfp-core"
+version.workspace = true
+edition.workspace = true
+description = "VisualFingerprint core: per-receiver invisible watermarking and leak tracing"
+
+[dependencies]
+hmac = "0.12"
+sha2 = "0.10"
+statrs = "0.18"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

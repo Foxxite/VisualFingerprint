@@ -100,7 +100,12 @@ def main() -> None:
     marked = embed_image(img, sym, 4242, p)
     g["image_embed"] = {"h": 64, "w": 96, "seed": "4242", "nslots": 8, "strength": 3.0,
                         "symbols": sym.tolist(), "marked_sha": h(marked),
-                        "marked_first_row": marked[0, :8].tolist()}
+                        "marked_first_row": marked[0, :8].tolist(),
+                        "image": img.reshape(-1).tolist(), "marked": marked.reshape(-1).tolist()}
+    from vfp.image.detect import detect_image
+    det = detect_image(marked, img, 4242, p)
+    g["image_detect"] = {"z": det.z.tolist(), "bits": det.bits.tolist(),
+                         "confidence": det.confidence.tolist(), "valid_fraction": det.valid_fraction}
 
     # ---- audio layout
     ap = AudioParams()
