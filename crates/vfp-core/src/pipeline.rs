@@ -183,10 +183,7 @@ pub fn add_asset(ws: &Workspace, path: &Path, name: Option<&str>, o: &PlanOption
     let default_name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let name = name.unwrap_or(&default_name);
     let aid = ws.add_asset(name, &plan.kind, path, &sha256_file(path)?, &plan.params, plan.m, o.max_receivers, o.n_colluders, o.eps)?;
-    let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let dest = ws.home.join("originals").join(format!("{aid}_{file}"));
-    std::fs::copy(path, &dest)?;
-    ws.set_asset_path(aid, &dest)?;
+    ws.store_original(aid, path)?;
     Ok((ws.asset(&aid.to_string())?, plan))
 }
 
@@ -201,18 +198,19 @@ pub fn mark_for_receiver(ws: &Workspace, a: &Asset, receiver: &str, outdir: &Pat
     let rec = ws.receiver(receiver)?;
     let ui = ws.issue(a.id, rec.id, None)?;
     let word = code_for(ws, a).codeword(ui);
-    let mut ext = ext_of(&a.orig_path);
+    let orig = ws.open_original(a)?;
+    let mut ext = ext_of(Path::new(&a.file_name));
     if a.kind == "image" && ext == "webp" {
         ext = "png".into(); // keep the copy lossless
     }
     let out = outdir.join(format!("{}__{}.{}", safe_name(stem(&a.name)), safe_name(&rec.name), ext));
     if a.kind == "image" {
-        let marked = embed_image(&read_image(&a.orig_path)?, &word, ws.layout_seed(a.id), &image_params(a))?;
+        let marked = embed_image(&read_image(orig.path())?, &word, ws.layout_seed(a.id), &image_params(a))?;
         write_image(&out, &marked)?;
     } else if a.kind == "video" {
-        embed_video(&a.orig_path, &out, &word, ws.layout_seed(a.id), &video_params(a), progress)?;
+        embed_video(orig.path(), &out, &word, ws.layout_seed(a.id), &video_params(a), progress)?;
     } else {
-        embed_audio(&a.orig_path, &out, &word, ws.layout_seed(a.id), &audio_params(a))?;
+        embed_audio(orig.path(), &out, &word, ws.layout_seed(a.id), &audio_params(a))?;
     }
     ws.issue(a.id, rec.id, Some(&out))?;
     Ok(out)
@@ -283,19 +281,20 @@ fn trace_one(ws: &Workspace, a: &Asset, leaked: &Path) -> Result<TraceResult> {
     }
     let mut warnings = vec![];
     let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    let orig = ws.open_original(a)?;
     let (bits, confidence, cover, evidence) = if a.kind == "image" {
-        let (det, reg) = detect_image(&read_image(leaked)?, &read_image(&a.orig_path)?, ws.layout_seed(a.id), &image_params(a));
+        let (det, reg) = detect_image(&read_image(leaked)?, &read_image(orig.path())?, ws.layout_seed(a.id), &image_params(a));
         if det.valid_fraction < 0.3 {
             warnings.push("Less than 30% of the leaked image overlaps the original.".to_string());
         }
         let ev = json!({"alignment": reg.method, "overlap": r2(det.valid_fraction)});
         (det.bits, det.confidence, det.valid_fraction, ev)
     } else if a.kind == "video" {
-        let det = detect_video(leaked, &a.orig_path, ws.layout_seed(a.id), &video_params(a), Some(a.m), None)?;
+        let det = detect_video(leaked, orig.path(), ws.layout_seed(a.id), &video_params(a), Some(a.m), None)?;
         let ev = json!({"time_offset_frames": det.tau, "alignment": det.warp, "symbols_with_evidence": r2(det.coverage)});
         (det.bits, det.confidence, det.coverage, ev)
     } else {
-        let det = detect_audio(leaked, &a.orig_path, ws.layout_seed(a.id), &audio_params(a), a.m)?;
+        let det = detect_audio(leaked, orig.path(), ws.layout_seed(a.id), &audio_params(a), a.m)?;
         if det.align < 0.5 {
             warnings.push(
                 "Audio alignment is weak. The file may have been sped up, slowed down, or changed too much.".into(),
