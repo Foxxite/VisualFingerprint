@@ -9,6 +9,6 @@ name = "vfp"
 path = "src/main.rs"
 
 [dependencies]
-vfp-core = { path = "../vfp-core" }
+vfp-core = { path = "../vfp-core", features = ["remote"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"

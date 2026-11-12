@@ -4,6 +4,7 @@
 //! The golden tests in `tests/golden.rs` check this against `tests/golden/golden.json`.
 
 pub mod audio;
+pub mod backend;
 pub mod error;
 pub mod image;
 pub mod imgio;

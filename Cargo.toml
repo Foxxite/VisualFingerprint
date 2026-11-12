@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vfp-core", "crates/vfp-cli"]
+members = ["crates/vfp-core", "crates/vfp-cli", "crates/vfp-server"]
 
 [workspace.package]
 version = "0.2.0"

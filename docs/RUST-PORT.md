@@ -12,7 +12,9 @@ The Python code in `src/vfp/` stays the **reference**. The Rust code must give t
 | Video: mark, align, trace | done, matches Python (scaled video: scores 2-6% lower) |
 | Workspace (SQLite, `master.key`) | done, same files as Python. Either program opens the other's workspace. |
 | `vfp` command line | done: `init`, `receivers`, `asset`, `mark`, `trace` (no `gui`) |
-| Backend trait, server, apps | not started |
+| `Backend` trait (`LocalBackend`, `RemoteBackend`) | done, see `docs/SERVER.md` |
+| `vfp-server` (axum, tokens, Docker files) | done and tested; Docker image not built yet |
+| Apps (Tauri, Android) | not started |
 
 ## Build and run
 
@@ -43,7 +45,9 @@ crates/vfp-core/        the engine (library)
   src/pipeline.rs       plan, add_asset, mark_for_receiver, trace_leak, report_text
   examples/collusion.rs collusion experiment (Rust version of vfp.eval.collusion_eval)
   tests/                see below
-crates/vfp-cli/         the `vfp` command
+crates/vfp-cli/         the `vfp` command (local or server mode)
+crates/vfp-server/      the self-hosted server
+deploy/                 Dockerfile and docker-compose.yml
 tools/dump_golden.py    writes tests/golden/golden.json from the Python code
 ```
 
@@ -103,7 +107,7 @@ The 240x240 clip and an 8 s 4K excerpt also trace (untouched, CRF 30, scale, tri
 
 ## Next steps
 
-1. `Backend` trait with `LocalBackend` and `RemoteBackend`, then `vfp-server` (Docker). See the plan.
+1. Build and test the Docker image. Job ids with progress for long traces.
 2. Tauri desktop app.
 3. Android: images first; audio and video need a decoder that does not use the `ffmpeg` program.
 4. Choose a licence (x264 and FFmpeg builds may decide it).

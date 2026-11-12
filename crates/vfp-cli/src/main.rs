@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use vfp_core::backend::{check_url, Backend, LocalBackend, RemoteBackend, ServerLink};
 use vfp_core::pipeline::{self, PlanOptions};
 use vfp_core::workspace::Workspace;
 use vfp_core::{Error, Result};
@@ -13,6 +14,15 @@ struct Cli {
     /// Workspace folder (default: $VFP_HOME or ./.vfp)
     #[arg(long, global = true, env = "VFP_HOME", default_value = ".vfp")]
     home: PathBuf,
+    /// Use a vfp-server instead of this device (default: the one saved by `vfp connect`)
+    #[arg(long, global = true, env = "VFP_SERVER")]
+    server: Option<String>,
+    /// Token for the server
+    #[arg(long, global = true, env = "VFP_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+    /// Ignore a saved server and use this device
+    #[arg(long, global = true)]
+    local: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -35,6 +45,14 @@ enum AssetAction {
 enum Cmd {
     /// Create a workspace and a secret key
     Init,
+    /// Save a server address and token. Later commands then use that server.
+    Connect {
+        url: String,
+        #[arg(long, env = "VFP_TOKEN", hide_env_values = true)]
+        token: String,
+    },
+    /// Forget the saved server and go back to this device
+    Disconnect,
     /// Add, import or list receivers
     Receivers {
         action: RecAction,
@@ -101,9 +119,23 @@ fn print_plan(p: &pipeline::Plan, max_receivers: u64, eps: f64) {
     }
 }
 
+fn pick_backend(cli: &Cli) -> Result<Box<dyn Backend>> {
+    if !cli.local {
+        if let Some(url) = &cli.server {
+            check_url(url)?;
+            let token = cli.token.clone().ok_or_else(|| Error("a server needs a token: --token or VFP_TOKEN".into()))?;
+            return Ok(Box::new(RemoteBackend::new(url, &token)));
+        }
+        if let Some(l) = ServerLink::load(&cli.home)? {
+            return Ok(Box::new(RemoteBackend::new(&l.url, &l.token)));
+        }
+    }
+    Ok(Box::new(LocalBackend::new(&cli.home)))
+}
+
 fn run(cli: Cli) -> Result<u8> {
-    let home = cli.home;
-    match cli.cmd {
+    let home = cli.home.clone();
+    match &cli.cmd {
         Cmd::Init => {
             let existed = home.join("master.key").exists();
             Workspace::init(&home)?;
@@ -113,79 +145,95 @@ fn run(cli: Cli) -> Result<u8> {
                 println!("A new secret key was made: {}", abs.join("master.key").display());
             }
             println!("BACK UP master.key. Without it you cannot trace a leak. Never share it.");
+            return Ok(0);
         }
-        Cmd::Receivers { action, names, note } => {
-            let ws = Workspace::open(&home)?;
-            match action {
-                RecAction::Add => {
-                    for n in &names {
-                        ws.add_receiver(n, note.as_deref().unwrap_or(""))?;
-                        println!("added receiver: {n}");
-                    }
-                }
-                RecAction::Import => {
-                    let file = names.first().ok_or_else(|| Error("import needs a file".into()))?;
-                    for line in std::fs::read_to_string(file)?.lines() {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-                        let (name, note) = line.split_once(',').unwrap_or((line, ""));
-                        ws.add_receiver(name.trim(), note.trim())?;
-                        println!("added receiver: {}", name.trim());
-                    }
-                }
-                RecAction::List => {
-                    for r in ws.receivers()? {
-                        println!("{:>4}  {:<30} {}", r.id, r.name, r.note);
-                    }
+        Cmd::Connect { url, token } => {
+            check_url(url)?;
+            let remote = RemoteBackend::new(url, token);
+            let info = remote.info()?;
+            ServerLink { url: url.clone(), token: token.clone() }.save(&home)?;
+            println!("Connected to {url} (role: {}, assets: {}).", info["role"].as_str().unwrap_or("?"), info["assets"]);
+            println!("Later commands use this server. No original file is stored on this device.");
+            return Ok(0);
+        }
+        Cmd::Disconnect => {
+            let p = ServerLink::path(&home);
+            if p.exists() {
+                std::fs::remove_file(p)?;
+            }
+            println!("This device now uses its own workspace again.");
+            return Ok(0);
+        }
+        Cmd::Asset { action: AssetAction::Plan, file, max_receivers, colluders, eps, strength, slots, crf, .. } => {
+            let f = file.as_deref().ok_or_else(|| Error("asset plan needs a file".into()))?;
+            let opts = PlanOptions { max_receivers: *max_receivers, eps: *eps, strength: *strength, slots: *slots, n_colluders: *colluders, crf: *crf };
+            print_plan(&pipeline::plan_file(f, &opts)?, *max_receivers, *eps);
+            return Ok(0);
+        }
+        _ => {}
+    }
+
+    let be = pick_backend(&cli)?;
+    if !matches!(cli.cmd, Cmd::Trace { json: true, .. }) {
+        eprintln!("[{}]", be.describe());
+    }
+    match cli.cmd {
+        Cmd::Init | Cmd::Connect { .. } | Cmd::Disconnect => unreachable!(),
+        Cmd::Receivers { action, names, note } => match action {
+            RecAction::Add => {
+                for n in &names {
+                    be.add_receiver(n, note.as_deref().unwrap_or(""))?;
+                    println!("added receiver: {n}");
                 }
             }
-        }
-        Cmd::Asset { action, file, name, max_receivers, colluders, eps, strength, slots, crf } => {
-            let opts = PlanOptions { max_receivers, eps, strength, slots, n_colluders: colluders, crf };
-            let need_file = || file.as_deref().ok_or_else(|| Error("asset add/plan needs a file".into()));
-            match action {
-                AssetAction::Add => {
-                    let ws = Workspace::open(&home)?;
-                    let (a, plan) = pipeline::add_asset(&ws, need_file()?, name.as_deref(), &opts)?;
-                    println!("registered asset '{}' (id {}, {})", a.name, a.id, a.kind);
-                    print_plan(&plan, a.max_receivers, a.eps);
-                }
-                AssetAction::Plan => {
-                    let plan = pipeline::plan_file(need_file()?, &opts)?;
-                    print_plan(&plan, max_receivers, eps);
-                }
-                AssetAction::List => {
-                    let ws = Workspace::open(&home)?;
-                    for a in ws.assets()? {
-                        let n = ws.issues(a.id)?.len();
-                        println!("{:>4}  {:<30} {:<6} symbols={:<6} copies issued={}", a.id, a.name, a.kind, a.m, n);
+            RecAction::Import => {
+                let file = names.first().ok_or_else(|| Error("import needs a file".into()))?;
+                for line in std::fs::read_to_string(file)?.lines() {
+                    if line.trim().is_empty() {
+                        continue;
                     }
+                    let (name, note) = line.split_once(',').unwrap_or((line, ""));
+                    be.add_receiver(name.trim(), note.trim())?;
+                    println!("added receiver: {}", name.trim());
                 }
             }
-        }
+            RecAction::List => {
+                for r in be.receivers()? {
+                    println!("{:>4}  {:<30} {}", r.id, r.name, r.note);
+                }
+            }
+        },
+        Cmd::Asset { action, file, name, max_receivers, colluders, eps, strength, slots, crf } => match action {
+            AssetAction::Add => {
+                let opts = PlanOptions { max_receivers, eps, strength, slots, n_colluders: colluders, crf };
+                let f = file.as_deref().ok_or_else(|| Error("asset add needs a file".into()))?;
+                let (a, plan) = be.add_asset(f, name.as_deref(), &opts)?;
+                println!("registered asset '{}' (id {}, {})", a.name, a.id, a.kind);
+                print_plan(&plan, a.max_receivers, eps);
+            }
+            AssetAction::List => {
+                for a in be.assets()? {
+                    println!("{:>4}  {:<30} {:<6} symbols={:<6} copies issued={}", a.id, a.name, a.kind, a.m, a.copies);
+                }
+            }
+            AssetAction::Plan => unreachable!(),
+        },
         Cmd::Mark { asset, to, all, out } => {
-            let ws = Workspace::open(&home)?;
-            let a = ws.asset(&asset)?;
-            let targets: Vec<String> = if all { ws.receivers()?.into_iter().map(|r| r.name).collect() } else { to };
+            let targets: Vec<String> = if all { be.receivers()?.into_iter().map(|r| r.name).collect() } else { to };
             if targets.is_empty() {
                 eprintln!("Say who gets a copy: --to NAME [NAME ...] or --all");
                 return Ok(2);
             }
-            for name in targets {
-                println!("marking for {name} ...");
-                let show = |n: usize, total: usize| eprint!("\r  frame {n}/{total}");
-                let progress: Option<&dyn Fn(usize, usize)> = if a.kind == "video" { Some(&show) } else { None };
-                let p = pipeline::mark_for_receiver(&ws, &a, &name, &out, progress)?;
-                if a.kind == "video" {
-                    eprintln!();
-                }
-                println!("  -> {}", p.display());
+            println!("marking for {} receiver(s) ...", targets.len());
+            let show = |n: usize, total: usize| eprint!("\r  {n}/{total}");
+            let copies = be.mark(&asset, &targets, &out, Some(&show))?;
+            eprintln!();
+            for (r, p) in copies {
+                println!("{r}  -> {}", p.display());
             }
         }
         Cmd::Trace { file, asset, top, json } => {
-            let ws = Workspace::open(&home)?;
-            let r = pipeline::trace_leak(&ws, &file, asset.as_deref())?;
+            let r = be.trace(&file, asset.as_deref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r).map_err(Error::from)?);
                 return Ok(0);
@@ -195,12 +243,14 @@ fn run(cli: Cli) -> Result<u8> {
             for w in &r.warnings {
                 println!("WARNING: {w}");
             }
-            println!("\n{:>4}  {:<30}{:>9}  ", "rank", "receiver", "score");
+            println!("
+{:>4}  {:<30}{:>9}  ", "rank", "receiver", "score");
             for (i, (n, s)) in r.ranking.iter().take(top).enumerate() {
                 let mark = if *s > r.threshold { "<-- above threshold" } else { "" };
                 println!("{:>4}  {:<30}{:>9.1}  {}", i + 1, n, s, mark);
             }
-            println!("\n{}", r.verdict);
+            println!("
+{}", r.verdict);
             println!("A score is statistical evidence, not proof. Keep the leaked file and this report.");
         }
     }

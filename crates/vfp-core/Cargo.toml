@@ -17,3 +17,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "tiff"] }
 realfft = "3"
 rayon = "1"
+ureq = { version = "2", optional = true, features = ["json"] }
+
+[features]
+default = []
+remote = ["dep:ureq"]

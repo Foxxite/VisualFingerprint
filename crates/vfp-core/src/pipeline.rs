@@ -73,7 +73,7 @@ pub fn safe_name(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------- register
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Plan {
     pub kind: String,
     pub m: usize,
@@ -219,7 +219,7 @@ pub fn mark_for_receiver(ws: &Workspace, a: &Asset, receiver: &str, outdir: &Pat
 }
 
 // ---------------------------------------------------------------- trace
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct TraceResult {
     pub asset: String,
     pub kind: String,
