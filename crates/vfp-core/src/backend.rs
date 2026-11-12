@@ -306,6 +306,27 @@ mod remote {
     const B_DB: &str = "vfp.db.enc";
     const B_PREFIX: &str = "o-";
     const DB_AAD: &[u8] = b"blob:vfp.db";
+    /// Key in `sync.json` for the newest database generation this device has seen.
+    const GEN_KEY: &str = "_gen";
+
+    /// Writer that cuts the first 8 bytes (the generation number) and keeps them aside.
+    struct GenSplit<W: std::io::Write> {
+        inner: W,
+        head: Vec<u8>,
+    }
+    impl<W: std::io::Write> std::io::Write for GenSplit<W> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let take = (8 - self.head.len()).min(buf.len());
+            self.head.extend_from_slice(&buf[..take]);
+            if take < buf.len() {
+                self.inner.write_all(&buf[take..])?;
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
 
     impl RemoteBackend {
         fn blob_list(&self) -> Result<Vec<BlobMeta>> {
@@ -428,13 +449,22 @@ mod remote {
                 let etag = self.remote.blob_get(B_DB, &sealed)?;
                 let mut input = std::io::BufReader::new(std::fs::File::open(&sealed)?);
                 let tmp = self.cache.join("vfp.db.new");
-                {
-                    let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+                let gen = {
+                    let mut out = GenSplit { inner: std::io::BufWriter::new(std::fs::File::create(&tmp)?), head: vec![] };
                     crate::vault::decrypt_stream(&self.dek.subkey("files"), DB_AAD, &mut input, &mut out)
                         .map_err(|_| Error("wrong key for this server, or the database was changed".into()))?;
                     std::io::Write::flush(&mut out)?;
-                }
+                    let h: [u8; 8] = out.head.as_slice().try_into().map_err(|_| Error("the database blob is damaged".into()))?;
+                    u64::from_le_bytes(h)
+                };
                 drop(input);
+                let newest: u64 = seen.get(GEN_KEY).and_then(|v| v.parse().ok()).unwrap_or(0);
+                if gen < newest {
+                    let _ = std::fs::remove_file(&tmp);
+                    let _ = std::fs::remove_file(&sealed);
+                    return err("the server sent an OLDER version of your database than this device has seen. It may have been rolled back. Nothing was changed here.");
+                }
+                seen.insert(GEN_KEY.into(), gen.to_string());
                 std::fs::rename(&tmp, &db_file)?;
                 let _ = std::fs::remove_file(&sealed);
                 seen.insert(B_DB.into(), etag);
@@ -460,8 +490,46 @@ mod remote {
                 if !dest.exists() {
                     self.remote.blob_get(&b.id, &dest)?;
                 }
+                // mark as used just now, for the least-recently-used rule
+                if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&dest) {
+                    let _ = f.set_modified(std::time::SystemTime::now());
+                }
+            }
+            if let Some(w) = &wanted {
+                self.trim_cache(list, w);
             }
             Ok(())
+        }
+
+        /// Keep the cached originals under a size limit (`VFP_CACHE_MB`, default 4096, 0 = no limit).
+        /// Only copies that the server also holds are removed, the one in use stays.
+        fn trim_cache(&self, list: &[BlobMeta], keep: &str) {
+            let limit: u64 = std::env::var("VFP_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(4096) * 1024 * 1024;
+            if limit == 0 {
+                return;
+            }
+            let Ok(rd) = std::fs::read_dir(self.cache.join("originals")) else { return };
+            let mut files: Vec<(std::time::SystemTime, u64, PathBuf, bool)> = vec![];
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".vfpenc") {
+                    continue;
+                }
+                if let Ok(m) = e.metadata() {
+                    let on_server = list.iter().any(|b| b.id == format!("{B_PREFIX}{name}"));
+                    files.push((m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), e.path(), on_server && name != keep));
+                }
+            }
+            let mut total: u64 = files.iter().map(|f| f.1).sum();
+            files.sort_by_key(|f| f.0);
+            for (_, size, path, removable) in files {
+                if total <= limit {
+                    break;
+                }
+                if removable && std::fs::remove_file(&path).is_ok() {
+                    total -= size;
+                }
+            }
         }
 
         fn local_ws(&self) -> Result<Workspace> {
@@ -494,8 +562,11 @@ mod remote {
                 }
             }
             let sealed = self.cache.join("vfp.db.enc");
+            let mut gen = 0u64;
             {
-                let mut input = std::fs::File::open(self.cache.join("vfp.db"))?;
+                let next = known.get(GEN_KEY).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + 1;
+                gen = next;
+                let mut input = std::io::Read::chain(std::io::Cursor::new(next.to_le_bytes().to_vec()), std::fs::File::open(self.cache.join("vfp.db"))?);
                 let mut out = std::io::BufWriter::new(std::fs::File::create(&sealed)?);
                 crate::vault::encrypt_stream(&self.dek.subkey("files"), DB_AAD, &mut input, &mut out)?;
                 std::io::Write::flush(&mut out)?;
@@ -505,6 +576,7 @@ mod remote {
             match put? {
                 Some(etag) => {
                     known.insert(B_DB.into(), etag);
+                    known.insert(GEN_KEY.into(), gen.to_string());
                     self.save_seen(&known)
                 }
                 None => {

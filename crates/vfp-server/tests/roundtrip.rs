@@ -358,3 +358,26 @@ fn zero_knowledge_server_never_sees_key_or_files() {
     drop(srv);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn zero_knowledge_rollback_is_detected() {
+    use vfp_core::backend::SealedBackend;
+    use vfp_core::vault::{KdfParams, Protection, VaultFile};
+    let tmp = std::env::temp_dir().join(format!("vfp_zkroll_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let data = tmp.join("data");
+    let srv = start_with(&data, 8, &[]);
+    let (vf, dek) = VaultFile::create(PASS, Protection::ZeroKnowledge, KdfParams::TEST).unwrap();
+    let a = SealedBackend::create(&srv.url, &srv.admin, &vf, dek, tmp.join("cache_a")).unwrap();
+    a.add_receiver("one", "").unwrap();
+    let blob = data.join("blobs").join("vfp.db.enc");
+    let old = std::fs::read(&blob).unwrap();
+    a.add_receiver("two", "").unwrap();
+    assert_eq!(a.receivers().unwrap().len(), 2);
+    // a hostile server puts the old database back
+    std::fs::write(&blob, &old).unwrap();
+    let e = a.receivers().unwrap_err().0;
+    assert!(e.contains("OLDER"), "{e}");
+    drop(srv);
+    let _ = std::fs::remove_dir_all(&tmp);
+}

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 pub const MIN_BITS: f64 = 64.0;
 pub const MIN_CHARS: usize = 12;
 /// Words in a generated passphrase (EFF large list, 12.9 bits per word).
-pub const DICEWARE_WORDS: usize = 7;
+pub const DICEWARE_WORDS: usize = 8;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Strength {
@@ -89,7 +89,7 @@ fn random_below(n: usize) -> usize {
     }
 }
 
-/// A random passphrase of [`DICEWARE_WORDS`] words from the EFF large list (about 90 bits).
+/// A random passphrase of [`DICEWARE_WORDS`] words from the EFF large list (about 103 bits).
 pub fn generate() -> String {
     let list = eff_wordlist::large::LIST;
     (0..DICEWARE_WORDS).map(|_| list[random_below(list.len())].1).collect::<Vec<_>>().join(" ")

@@ -60,10 +60,12 @@ Marking and tracing audio or video needs a plain file for FFmpeg. It goes in a p
 
 ### Limits of Zero-knowledge mode
 
-- A malicious server can return an old copy of the database (rollback). This is not detected yet.
+- A malicious server can return an old copy of the database. A device that has seen a newer version detects this
+  (a generation number inside the sealed database) and refuses it. A brand-new device with no cache cannot tell.
 - A device downloads the whole original for each mark or trace. This costs bandwidth on mobile data.
 - Marked copies are not kept on the server. They go to the local output folder only.
-- The cache on each device is not size-limited yet.
+- The cache of originals on each device is limited to 4096 MB (`VFP_CACHE_MB`, 0 = no limit). The least recently used
+  copies that the server also holds are removed first. This limit has no automated test yet.
 - Two devices that write at the same moment: the second write fails with a clear message. Nothing is lost. Run the command again.
 - Changing the passphrase uses an admin token to replace `vault.json`. The server cannot check the key, so it trusts that token.
 - If vault creation is interrupted, the server vault is incomplete. Start again on a fresh data folder.
