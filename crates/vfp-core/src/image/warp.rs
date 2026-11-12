@@ -3,6 +3,8 @@
 //! A warp matrix `M` maps DESTINATION coordinates to SOURCE coordinates
 //! (the same meaning as OpenCV's `WARP_INVERSE_MAP`).
 
+use rayon::prelude::*;
+
 pub type Mat3 = [[f64; 3]; 3];
 
 pub const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -120,13 +122,13 @@ pub fn bicubic(p: &Plane, x: f64, y: f64) -> f32 {
 /// dst(x, y) = src(M (x, y)); pixels that map outside the source are 0.
 pub fn warp_plane(src: &Plane, m: &Mat3, dh: usize, dw: usize, cubic: bool) -> Plane {
     let mut out = Plane::new(dh, dw);
-    for y in 0..dh {
-        for x in 0..dw {
+    out.d.par_chunks_mut(dw).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
             if let Some((sx, sy)) = project(m, x as f64, y as f64) {
-                out.d[y * dw + x] = if cubic { bicubic(src, sx, sy) } else { bilinear(src, sx, sy) };
+                *o = if cubic { bicubic(src, sx, sy) } else { bilinear(src, sx, sy) };
             }
         }
-    }
+    });
     out
 }
 
@@ -230,18 +232,18 @@ pub fn resize_area_u8(src: &[u8], sh: usize, sw: usize, dh: usize, dw: usize) ->
     let (wx, wy) = (axis(sw, dw), axis(sh, dh));
     // horizontal pass
     let mut tmp = vec![0f32; sh * dw];
-    for y in 0..sh {
+    tmp.par_chunks_mut(dw).enumerate().for_each(|(y, row)| {
         for (x, ws) in wx.iter().enumerate() {
-            tmp[y * dw + x] = ws.iter().map(|&(k, w)| src[y * sw + k] as f32 * w).sum();
+            row[x] = ws.iter().map(|&(k, w)| src[y * sw + k] as f32 * w).sum();
         }
-    }
+    });
     let mut out = vec![0u8; dh * dw];
-    for (y, ws) in wy.iter().enumerate() {
-        for x in 0..dw {
-            let v: f32 = ws.iter().map(|&(k, w)| tmp[k * dw + x] * w).sum();
-            out[y * dw + x] = v.round().clamp(0.0, 255.0) as u8;
+    out.par_chunks_mut(dw).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
+            let v: f32 = wy[y].iter().map(|&(k, w)| tmp[k * dw + x] * w).sum();
+            *o = v.round().clamp(0.0, 255.0) as u8;
         }
-    }
+    });
     out
 }
 
@@ -249,24 +251,24 @@ pub fn resize_area_u8(src: &[u8], sh: usize, sw: usize, dh: usize, dw: usize) ->
 pub fn resize_cubic(src: &[f32], sh: usize, sw: usize, dh: usize, dw: usize) -> Vec<f32> {
     let (sx, sy) = (sw as f64 / dw as f64, sh as f64 / dh as f64);
     let mut out = vec![0f32; dh * dw];
-    for y in 0..dh {
+    out.par_chunks_mut(dw).enumerate().for_each(|(y, row)| {
         let fy = (y as f64 + 0.5) * sy - 0.5;
         let (y0, wy) = (fy.floor(), cubic_weights(fy - fy.floor()));
-        for x in 0..dw {
+        for (x, o) in row.iter_mut().enumerate() {
             let fx = (x as f64 + 0.5) * sx - 0.5;
             let (x0, wx) = (fx.floor(), cubic_weights(fx - fx.floor()));
             let mut s = 0f32;
             for (j, wyj) in wy.iter().enumerate() {
                 let yy = (y0 as isize - 1 + j as isize).clamp(0, sh as isize - 1) as usize;
-                let mut row = 0f32;
+                let mut r = 0f32;
                 for (i, wxi) in wx.iter().enumerate() {
                     let xx = (x0 as isize - 1 + i as isize).clamp(0, sw as isize - 1) as usize;
-                    row += wxi * src[yy * sw + xx];
+                    r += wxi * src[yy * sw + xx];
                 }
-                s += wyj * row;
+                s += wyj * r;
             }
-            out[y * dw + x] = s;
+            *o = s;
         }
-    }
+    });
     out
 }

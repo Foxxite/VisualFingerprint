@@ -1,0 +1,41 @@
+name: rust
+
+on:
+  push:
+    branches: [main, rust-port]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Audio and video tests need ffmpeg with libx264, libmp3lame and libopus.
+      # They skip themselves when ffmpeg is missing, so a failed install shows up as "skipped", not green.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Check ffmpeg
+        shell: bash
+        run: ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx264|libmp3lame|libopus"
+
+      # test-media/ is not in the repository, so the real-photo test skips itself here.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build the command line
+        run: cargo build --release -p vfp-cli

@@ -9,6 +9,7 @@ use super::features::{detect, match_ratio};
 use super::warp::*;
 use super::Bgr;
 use crate::rng::Pcg64;
+use rayon::prelude::*;
 use nalgebra::{DMatrix, DVector, SMatrix, SVector};
 
 #[derive(Clone, Debug)]
@@ -365,15 +366,22 @@ pub fn apply_warp(leaked: &Bgr, m: Option<&Mat3>, h: usize, w: usize) -> (Bgr, V
 
 /// Warp one luma plane into the original grid (values rounded to whole numbers like an 8-bit image).
 pub fn apply_warp_plane(leaked: &Plane, m: Option<&Mat3>, h: usize, w: usize) -> (Plane, Vec<bool>) {
-    let Some(m) = m else {
-        return (leaked.clone(), vec![true; h * w]);
-    };
+    (warp_values(leaked, m, h, w), valid_mask(leaked.h, leaked.w, m, h, w))
+}
+
+/// Just the warped values. Pair with `valid_mask` (which depends only on `m` and the sizes,
+/// so video computes it once and reuses it for every frame).
+pub fn warp_values(leaked: &Plane, m: Option<&Mat3>, h: usize, w: usize) -> Plane {
+    let Some(m) = m else { return leaked.clone() };
     let mut warped = warp_plane(leaked, m, h, w, true);
-    for v in warped.d.iter_mut() {
-        *v = v.round().clamp(0.0, 255.0);
-    }
-    let inside = warp_inside(leaked.h, leaked.w, None, m, h, w);
-    (warped, erode(&inside, h, w, 5))
+    warped.d.par_iter_mut().for_each(|v| *v = v.round().clamp(0.0, 255.0));
+    warped
+}
+
+/// Which pixels of the original grid are covered by the warped leak (eroded a little).
+pub fn valid_mask(leak_h: usize, leak_w: usize, m: Option<&Mat3>, h: usize, w: usize) -> Vec<bool> {
+    let Some(m) = m else { return vec![true; h * w] };
+    erode(&warp_inside(leak_h, leak_w, None, m, h, w), h, w, 5)
 }
 
 /// Returns (aligned image, valid mask, registration info).

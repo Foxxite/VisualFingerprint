@@ -5,6 +5,7 @@ use super::ffio::{decode_yuv, probe, Encoder};
 use crate::error::{err, Result};
 use crate::image::plane::{embed_plane, make_layout};
 use crate::image::warp::{resize_area_u8, resize_cubic};
+use rayon::prelude::*;
 use std::path::Path;
 
 pub type Progress<'a> = Option<&'a dyn Fn(usize, usize)>;
@@ -35,16 +36,16 @@ pub fn embed_video(src: &Path, dst: &Path, symbols: &[u8], seed: u64, p: &VideoP
             sym = part.iter().map(|&b| 2.0 * b as f32 - 1.0).collect();
         }
         let y2: Vec<f32> = if scaled {
-            let yc: Vec<f32> = resize_area_u8(&fr.y, h, w, ch, cw).iter().map(|&v| v as f32).collect();
+            let yc: Vec<f32> = resize_area_u8(&fr.y, h, w, ch, cw).par_iter().map(|&v| v as f32).collect();
             let marked = embed_plane(&yc, ch, cw, &sym, &slot, &pat, strength);
-            let delta: Vec<f32> = marked.iter().zip(&yc).map(|(a, b)| a - b).collect();
+            let delta: Vec<f32> = marked.par_iter().zip(&yc).map(|(a, b)| a - b).collect();
             let up = resize_cubic(&delta, ch, cw, h, w);
-            fr.y.iter().zip(&up).map(|(&y, d)| y as f32 + d).collect()
+            fr.y.par_iter().zip(&up).map(|(&y, d)| y as f32 + d).collect()
         } else {
-            let yf: Vec<f32> = fr.y.iter().map(|&v| v as f32).collect();
+            let yf: Vec<f32> = fr.y.par_iter().map(|&v| v as f32).collect();
             embed_plane(&yf, h, w, &sym, &slot, &pat, strength)
         };
-        let out: Vec<u8> = y2.iter().map(|v| v.round_ties_even().clamp(0.0, 255.0) as u8).collect();
+        let out: Vec<u8> = y2.par_iter().map(|v| v.round_ties_even().clamp(0.0, 255.0) as u8).collect();
         enc.write(&out, &fr.u, &fr.v)?;
         n += 1;
         if let Some(cb) = progress {

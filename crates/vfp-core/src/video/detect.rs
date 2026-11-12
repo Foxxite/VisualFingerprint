@@ -6,7 +6,7 @@ use super::sync::find_offsets;
 use crate::error::Result;
 use crate::image::common::NPOS;
 use crate::image::plane::{block_valid, make_layout, plane_stats};
-use crate::image::register::{apply_warp_plane, estimate_warp_gray};
+use crate::image::register::{estimate_warp_gray, valid_mask, warp_values};
 use crate::image::warp::{resize_area_u8, Mat3, Plane};
 use std::collections::HashMap;
 use std::path::Path;
@@ -169,13 +169,13 @@ pub fn detect_video(
         let Some(first) = pairs.first() else { continue };
         let reg = estimate_warp_gray(&first.0.plane(), &first.1.plane());
         let mut energy = vec![];
+        let bv = block_valid(&valid_mask(first.0.h, first.0.w, reg.m.as_ref(), ch, cw), ch, cw);
         for (yl, yo, j) in &pairs {
             let seg = (*j as usize) / sf;
             if (seg + 1) * k > m {
                 continue;
             }
-            let (al, valid) = apply_warp_plane(&yl.plane(), reg.m.as_ref(), ch, cw);
-            let bv = block_valid(&valid, ch, cw);
+            let al = warp_values(&yl.plane(), reg.m.as_ref(), ch, cw);
             // Score = energy with the real pattern minus energy with a control pattern (a segment
             // that does not exist). Picture mismatch raises both equally; only a real mark raises the first.
             let mut e = [0f64; 2];
@@ -217,6 +217,9 @@ pub fn detect_video(
     let mut orig = Cursor::new(&io, jmap(0).max(0))?;
     let (mut acc_num, mut acc_den) = (vec![0f64; m], vec![0f64; m]);
     let mut n_done = 0usize;
+    // the warp is the same for every frame, so its valid-pixel mask is too
+    let (lh, lw) = head.first().map_or((il.height, il.width), |f| (f.1.h, f.1.w));
+    let bv_main = block_valid(&valid_mask(lh, lw, mw.as_ref(), ch, cw), ch, cw);
     let rest = leaked_frames; // continues after the buffered head
     for (i, yl) in head.iter().cloned().chain(rest) {
         if i % p.frame_stride != 0 {
@@ -232,9 +235,8 @@ pub fn detect_video(
         }
         let Some(yo) = orig.get(j) else { continue };
         let (slot, pat) = layouts.get(seg as u64);
-        let (al, valid) = apply_warp_plane(&yl.plane(), mw.as_ref(), ch, cw);
-        let bv = block_valid(&valid, ch, cw);
-        let (num, den, sig) = plane_stats(&canon(&yo, cw, ch).plane().d, &al.d, ch, cw, &bv, slot, pat, strength, k);
+        let al = warp_values(&yl.plane(), mw.as_ref(), ch, cw);
+        let (num, den, sig) = plane_stats(&canon(&yo, cw, ch).plane().d, &al.d, ch, cw, &bv_main, slot, pat, strength, k);
         for s in 0..k {
             acc_num[seg * k + s] += num[s] / (sig * sig);
             acc_den[seg * k + s] += den[s] / (sig * sig);
