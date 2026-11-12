@@ -5,7 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 export type Mode = "none" | "local" | "server";
 export interface AppState {
   mode: Mode; place: string; server_url: string | null; home: string;
-  encrypted: boolean; locked: boolean; needs_vault: boolean;
+  encrypted: boolean; locked: boolean; needs_vault: boolean; zero_knowledge: boolean;
 }
 export interface Strength { bits: number; ok: boolean; advice: string[] }
 export interface Receiver { id: number; name: string; note: string }
@@ -23,7 +23,7 @@ export const api = {
   generatePassphrase: () => invoke<string>("generate_passphrase"),
   unlock: (passphrase: string) => invoke<void>("unlock", { passphrase }),
   lock: () => invoke<void>("lock"),
-  createServerVault: (passphrase: string) => invoke<void>("create_server_vault", { passphrase }),
+  createServerVault: (passphrase: string, zeroKnowledge: boolean) => invoke<void>("create_server_vault", { passphrase, zeroKnowledge }),
   changePassphrase: (old: string, nw: string) => invoke<void>("change_passphrase", { old, new: nw }),
   encryptWorkspace: (passphrase: string) => invoke<string>("encrypt_workspace", { passphrase }),
   defaultWorkspace: () => invoke<string>("default_workspace"),

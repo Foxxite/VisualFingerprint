@@ -3,7 +3,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use vfp_core::backend::{check_url, Backend, LocalBackend, RemoteBackend, ServerLink};
+use vfp_core::backend::{check_url, Backend, LocalBackend, RemoteBackend, SealedBackend, ServerLink};
 use vfp_core::pipeline::{self, PlanOptions};
 use vfp_core::strength;
 use vfp_core::vault::{Dek, KdfParams, Protection, VaultFile, VAULT_FILE};
@@ -122,7 +122,12 @@ enum Cmd {
 #[derive(Subcommand)]
 enum VaultCmd {
     /// Encrypt this workspace, or create the vault on the connected server
-    Init,
+    Init {
+        /// On a server: zero-knowledge mode. The server never gets your key and cannot read your files.
+        /// Without this flag the server is "protected": it gets the key per request over HTTPS.
+        #[arg(long)]
+        zero_knowledge: bool,
+    },
     /// Say whether the workspace is encrypted
     Status,
     /// Change the passphrase of this workspace. Files are not touched.
@@ -183,23 +188,28 @@ fn pick_backend(cli: &Cli) -> Result<Box<dyn Backend>> {
         if let Some(url) = &cli.server {
             check_url(url)?;
             let token = cli.token.clone().ok_or_else(|| Error("a server needs a token: --token or VFP_TOKEN".into()))?;
-            return Ok(Box::new(remote_unlocked(url, &token)?));
+            return remote_unlocked(&cli.home, url, &token);
         }
         if let Some(l) = ServerLink::load(&cli.home)? {
-            return Ok(Box::new(remote_unlocked(&l.url, &l.token)?));
+            return remote_unlocked(&cli.home, &l.url, &l.token);
         }
     }
     Ok(Box::new(LocalBackend::with_key(&cli.home, unlock_local(&cli.home)?)))
 }
 
 /// Connect to a server. If it has a vault, ask for the passphrase and unlock it here (the server never sees it).
-fn remote_unlocked(url: &str, token: &str) -> Result<RemoteBackend> {
+fn remote_unlocked(home: &Path, url: &str, token: &str) -> Result<Box<dyn Backend>> {
     let plain = RemoteBackend::new(url, token);
     match plain.vault()? {
-        None => Ok(plain),
+        None => Ok(Box::new(plain)),
         Some(v) => {
             let dek = v.unlock(&passphrase("Passphrase: ")?)?;
-            RemoteBackend::new(url, token).with_key(Some(dek))
+            if v.protection == Protection::ZeroKnowledge {
+                // zero-knowledge: the key stays here, this device does the work
+                Ok(Box::new(SealedBackend::open(url, token, dek, SealedBackend::cache_dir(home, url))))
+            } else {
+                Ok(Box::new(RemoteBackend::new(url, token).with_key(Some(dek))?))
+            }
         }
     }
 }
@@ -248,7 +258,7 @@ fn run(cli: Cli) -> Result<u8> {
                         println!("server {}: {}", l.url, info["protection"].as_str().unwrap_or("?"));
                     }
                 }
-                VaultCmd::Init => {
+                VaultCmd::Init { zero_knowledge } => {
                     if !cli.local {
                         if let Some(l) = ServerLink::load(&home)? {
                             let r = RemoteBackend::new(&l.url, &l.token);
@@ -256,6 +266,15 @@ fn run(cli: Cli) -> Result<u8> {
                                 return Err(Error("the server already has a vault".into()));
                             }
                             let pass = new_passphrase()?;
+                            if *zero_knowledge {
+                                let (vf, dek) = VaultFile::create(&pass, Protection::ZeroKnowledge, KdfParams::DESKTOP)?;
+                                let cache = SealedBackend::cache_dir(&home, &l.url);
+                                SealedBackend::create(&l.url, &l.token, &vf, dek, cache.clone())?;
+                                println!("The zero-knowledge vault is ready. The server never saw your passphrase or key and cannot read your files.");
+                                backup_notice(&cache.join(VAULT_FILE));
+                                println!("The server holds a copy of this file too, but if the server is lost and you have no backup, the data is gone.");
+                                return Ok(0);
+                            }
                             let (vf, dek) = VaultFile::create(&pass, Protection::Protected, KdfParams::DESKTOP)?;
                             RemoteBackend::new(&l.url, &l.token).with_key(Some(dek))?.create_vault(&vf)?;
                             println!("The server vault is ready. The passphrase never left this device (the server holds only the key, per request, over HTTPS).");
@@ -273,6 +292,25 @@ fn run(cli: Cli) -> Result<u8> {
                     Workspace::migrate_to_vault(&home, &vf, &dek)?;
                     println!("Encrypted. Originals and master.key are now sealed; the plain ones were removed.");
                     backup_notice(&home.join(VAULT_FILE));
+                }
+                VaultCmd::Passwd if !cli.local && ServerLink::load(&home)?.is_some() => {
+                    let l = ServerLink::load(&home)?.ok_or_else(|| Error("not connected".into()))?;
+                    let r = RemoteBackend::new(&l.url, &l.token);
+                    let v = r.vault()?.ok_or_else(|| Error("the server has no vault".into()))?;
+                    if v.protection != Protection::ZeroKnowledge {
+                        return Err(Error("changing the passphrase on a protected server is not supported yet. Use a local workspace or a zero-knowledge server.".into()));
+                    }
+                    let old = passphrase("Current passphrase: ")?;
+                    v.unlock(&old)?;
+                    let new = new_passphrase()?;
+                    let nv = v.change_passphrase(&old, &new)?;
+                    r.replace_vault(&nv)?;
+                    let cache = SealedBackend::cache_dir(&home, &l.url);
+                    if cache.exists() {
+                        nv.save(&cache.join(VAULT_FILE))?;
+                    }
+                    println!("Passphrase changed on the server. Files were not touched.");
+                    println!("Other devices use the new passphrase from now on.");
                 }
                 VaultCmd::Passwd => {
                     let path = home.join(VAULT_FILE);
@@ -292,7 +330,7 @@ fn run(cli: Cli) -> Result<u8> {
             let remote = RemoteBackend::new(url, token);
             let info = remote.info()?;
             if info["protection"] == "uninitialized" {
-                println!("This server has no vault yet. Run: vfp vault init");
+                println!("This server has no vault yet. Run: vfp vault init (add --zero-knowledge so the server can never read your files)");
             }
             ServerLink { url: url.clone(), token: token.clone() }.save(&home)?;
             println!("Connected to {url} (role: {}, protection: {}).", info["role"].as_str().unwrap_or("?"), info["protection"].as_str().unwrap_or("?"));

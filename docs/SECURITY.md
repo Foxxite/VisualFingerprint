@@ -33,6 +33,10 @@ data key --HKDF--> sub-keys: files, master, db-fields, db-index
 - **Server (Protected mode)**: see [SERVER.md](SERVER.md). The client sends the data key per request over HTTPS.
   The passphrase never leaves the client.
 
+- **Server (Zero-knowledge mode)**: the key never reaches the server. The server stores encrypted blobs only.
+  Each device keeps an encrypted cache, does the marking and tracing itself, and uploads the sealed database.
+  The server refuses any request that carries a key header.
+
 ## Temporary files
 
 Marking and tracing audio or video needs a plain file for FFmpeg. It goes in a private folder
@@ -41,7 +45,7 @@ Marking and tracing audio or video needs a plain file for FFmpeg. It goes in a p
 ## Honest limits
 
 - **Protected mode does not protect against a compromised running server.** The server sees the key while it works.
-  A host admin who reads process memory can read your files. (Zero-knowledge mode is planned; it is not built yet.)
+  A host admin who reads process memory can read your files. Use Zero-knowledge mode if you do not trust the host.
 - Overwriting a file does not reliably destroy it on an SSD or a journaling file system.
   Use full-disk encryption on every machine that holds plain data, even briefly.
 - **A lost passphrase means lost data.** There is no recovery.
@@ -53,3 +57,14 @@ Marking and tracing audio or video needs a plain file for FFmpeg. It goes in a p
   database could swap two sealed values of the same kind. Reading is still impossible.
 - Encrypted workspaces cannot be opened by the old Python version.
 - Marked copies you give to receivers are not covered. Protect them as you share them.
+
+### Limits of Zero-knowledge mode
+
+- A malicious server can return an old copy of the database (rollback). This is not detected yet.
+- A device downloads the whole original for each mark or trace. This costs bandwidth on mobile data.
+- Marked copies are not kept on the server. They go to the local output folder only.
+- The cache on each device is not size-limited yet.
+- Two devices that write at the same moment: the second write fails with a clear message. Nothing is lost. Run the command again.
+- Changing the passphrase uses an admin token to replace `vault.json`. The server cannot check the key, so it trusts that token.
+- If vault creation is interrupted, the server vault is incomplete. Start again on a fresh data folder.
+- Moving a Protected server to Zero-knowledge (rekey) is not built yet. The server has seen the old key, so make a new vault and copy the data.

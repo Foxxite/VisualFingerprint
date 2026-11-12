@@ -6,7 +6,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
-use vfp_core::backend::{check_url, AssetInfo, Backend, LocalBackend, ReceiverInfo, RemoteBackend, ServerLink};
+use vfp_core::backend::{check_url, AssetInfo, Backend, LocalBackend, ReceiverInfo, RemoteBackend, SealedBackend, ServerLink};
 use vfp_core::pipeline::{self, Plan, PlanOptions, TraceResult};
 use vfp_core::strength::{self, Strength};
 use vfp_core::vault::{Dek, KdfParams, Protection, VaultFile, VAULT_FILE};
@@ -60,7 +60,13 @@ fn backend(app: &AppHandle) -> Res<Box<dyn Backend + Send>> {
     let h = home(app)?;
     let key = key_of(app);
     if let Some(l) = ServerLink::load(&h).map_err(e)? {
-        return Ok(Box::new(RemoteBackend::new(&l.url, &l.token).with_key(key).map_err(e)?));
+        let plain = RemoteBackend::new(&l.url, &l.token);
+        // zero-knowledge: the key stays on this device and this device does the work
+        if plain.info().ok().and_then(|i| i["protection"].as_str().map(|s| s == "zero-knowledge")).unwrap_or(false) {
+            let dek = key.ok_or("The workspace is locked. Enter your passphrase.")?;
+            return Ok(Box::new(SealedBackend::open(&l.url, &l.token, dek, SealedBackend::cache_dir(&h, &l.url))));
+        }
+        return Ok(Box::new(plain.with_key(key).map_err(e)?));
     }
     if !has_workspace(&h) {
         return Err("Set up the app first.".into());
@@ -89,6 +95,8 @@ struct State {
     locked: bool,
     /// A server with no vault yet: the user must create one
     needs_vault: bool,
+    /// The server cannot read the data (key stays on this device)
+    zero_knowledge: bool,
 }
 
 #[tauri::command]
@@ -101,7 +109,7 @@ async fn app_state(app: AppHandle) -> Res<State> {
         (None, true) => ("local", "This device".to_string()),
         (None, false) => ("none", String::new()),
     };
-    let (mut encrypted, mut needs_vault) = (false, false);
+    let (mut encrypted, mut needs_vault, mut zero_knowledge) = (false, false, false);
     if let Some(l) = &link {
         let l = l.clone();
         // If the server cannot be reached, assume nothing special. Later calls show the real error.
@@ -115,6 +123,7 @@ async fn app_state(app: AppHandle) -> Res<State> {
         {
             encrypted = vault;
             needs_vault = protection == "uninitialized";
+            zero_knowledge = protection == "zero-knowledge";
         }
     } else if mode == "local" {
         encrypted = Workspace::protection(&h) == WsProtection::Vault;
@@ -127,6 +136,7 @@ async fn app_state(app: AppHandle) -> Res<State> {
         encrypted,
         locked: encrypted && !unlocked,
         needs_vault,
+        zero_knowledge,
     })
 }
 
@@ -141,10 +151,10 @@ fn generate_passphrase() -> String {
 }
 
 /// Make a key from the passphrase, on a worker thread (Argon2 is slow on purpose).
-async fn new_vault(passphrase: String) -> Res<(VaultFile, Dek)> {
+async fn new_vault(passphrase: String, protection: Protection) -> Res<(VaultFile, Dek)> {
     work(move || {
         strength::require_strong(&passphrase).map_err(e)?;
-        VaultFile::create(&passphrase, Protection::Protected, KdfParams::DESKTOP).map_err(e)
+        VaultFile::create(&passphrase, protection, KdfParams::DESKTOP).map_err(e)
     })
     .await
 }
@@ -173,12 +183,21 @@ fn lock(app: AppHandle) {
 
 /// Create the vault on a fresh server. The passphrase stays here.
 #[tauri::command]
-async fn create_server_vault(app: AppHandle, passphrase: String) -> Res<()> {
+async fn create_server_vault(app: AppHandle, passphrase: String, zero_knowledge: Option<bool>) -> Res<()> {
     let h = home(&app)?;
     let l = ServerLink::load(&h).map_err(e)?.ok_or("Not connected to a server.")?;
-    let (vf, dek) = new_vault(passphrase).await?;
+    let zk = zero_knowledge.unwrap_or(false);
+    let (vf, dek) = new_vault(passphrase, if zk { Protection::ZeroKnowledge } else { Protection::Protected }).await?;
     let d2 = dek.clone();
-    work(move || RemoteBackend::new(&l.url, &l.token).with_key(Some(d2)).map_err(e)?.create_vault(&vf).map_err(e)).await?;
+    work(move || {
+        if zk {
+            SealedBackend::create(&l.url, &l.token, &vf, d2, SealedBackend::cache_dir(&h, &l.url)).map_err(e)?;
+            Ok(())
+        } else {
+            RemoteBackend::new(&l.url, &l.token).with_key(Some(d2)).map_err(e)?.create_vault(&vf).map_err(e)
+        }
+    })
+    .await?;
     set_key(&app, Some(dek));
     Ok(())
 }
@@ -199,7 +218,7 @@ async fn change_passphrase(app: AppHandle, old: String, new: String) -> Res<()> 
 #[tauri::command]
 async fn encrypt_workspace(app: AppHandle, passphrase: String) -> Res<String> {
     let h = home(&app)?;
-    let (vf, dek) = new_vault(passphrase).await?;
+    let (vf, dek) = new_vault(passphrase, Protection::Protected).await?;
     let d2 = dek.clone();
     let h2 = h.clone();
     work(move || Workspace::migrate_to_vault(&h2, &vf, &d2).map_err(e)).await?;
@@ -227,7 +246,7 @@ async fn setup_local(app: AppHandle, folder: Option<String>, passphrase: Option<
     let h = home(&app)?;
     match passphrase.filter(|p| !p.is_empty()) {
         Some(p) => {
-            let (vf, dek) = new_vault(p).await?;
+            let (vf, dek) = new_vault(p, Protection::Protected).await?;
             Workspace::init_encrypted(&h, &vf, &dek).map_err(e)?;
             set_key(&app, Some(dek));
             Ok(h.join(VAULT_FILE).display().to_string())

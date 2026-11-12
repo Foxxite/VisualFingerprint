@@ -6,13 +6,14 @@ import Passphrase from "./Passphrase";
 export default function NewServerVault({ onDone }: { onDone: () => void }) {
   const [pass, setPass] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [zk, setZk] = useState(false);
   const [msg, setMsg] = useState("");
   const go = async () => {
     if (!pass) return;
     setBusy(true);
     setMsg("");
     try {
-      await api.createServerVault(pass);
+      await api.createServerVault(pass, zk);
       onDone();
     } catch (x) {
       setMsg(errText(x));
@@ -28,6 +29,14 @@ export default function NewServerVault({ onDone }: { onDone: () => void }) {
           passphrase on every device. Only an admin token can do this step.
         </p>
         <div className="card">
+          <label style={{ display: "block", marginBottom: 8 }}>
+            <input type="radio" checked={!zk} onChange={() => setZk(false)} /> <b>Protected</b> (default). The server gets the key
+            for each request, over HTTPS, and does the work. Fast on phones.
+          </label>
+          <label style={{ display: "block", marginBottom: 14 }}>
+            <input type="radio" checked={zk} onChange={() => setZk(true)} /> <b>Zero-knowledge</b>. The key never leaves your
+            devices. The server only stores encrypted data. Each device downloads what it needs.
+          </label>
           <Passphrase onValid={setPass} />
           <div className="row" style={{ marginTop: 14 }}>
             <button className="primary" disabled={!pass || busy} onClick={go}>

@@ -134,6 +134,8 @@ struct State_ {
     max_upload: u64,
     jobs: Semaphore,
     trust_proxy: bool,
+    /// One blob write at a time, so the `If-Match` check and the rename cannot interleave
+    blob_lock: tokio::sync::Mutex<()>,
 }
 type Shared = Arc<State_>;
 
@@ -181,7 +183,10 @@ fn auth(st: &State_, h: &HeaderMap, admin: bool) -> Result<TokenRec, ApiErr> {
 
 fn state_of(st: &State_) -> &'static str {
     match Workspace::protection(&st.data) {
-        Protection::Vault => "protected",
+        Protection::Vault => match VaultFile::load(&st.data.join(VAULT_FILE)) {
+            Ok(Some(v)) if v.protection == vault::Protection::ZeroKnowledge => "zero-knowledge",
+            _ => "protected",
+        },
         Protection::None if st.data.join("vfp.db").exists() => "plain",
         Protection::None => "uninitialized",
     }
@@ -202,6 +207,7 @@ fn key_of(h: &HeaderMap) -> Result<Option<Dek>, ApiErr> {
 fn ws(st: &State_, h: &HeaderMap) -> Result<(Workspace, Option<Dek>), ApiErr> {
     match state_of(st) {
         "uninitialized" => Err(ApiErr(StatusCode::SERVICE_UNAVAILABLE, "this server has no vault yet. Create one first (app or: vfp vault init)".into())),
+        "zero-knowledge" => Err(ApiErr(StatusCode::CONFLICT, "this server is zero-knowledge: it only stores encrypted blobs. The client does the work.".into())),
         "plain" => Ok((Workspace::open(&st.data)?, None)),
         _ => {
             let dek = key_of(h)?.ok_or_else(|| ApiErr(StatusCode::LOCKED, "locked: the request needs the key (unlock with your passphrase)".into()))?;
@@ -493,6 +499,16 @@ async fn create_vault(State(st): State<Shared>, h: HeaderMap, Json(v): Json<Vaul
     if state_of(&st) != "uninitialized" {
         return Err(ApiErr(StatusCode::CONFLICT, "this server already holds a workspace".into()));
     }
+    if v.protection == vault::Protection::ZeroKnowledge {
+        // the server must never get the key in this mode
+        if h.contains_key("x-vfp-key") {
+            return Err(ApiErr(StatusCode::BAD_REQUEST, "a zero-knowledge vault must not be created with a key".into()));
+        }
+        std::fs::create_dir_all(st.data.join("blobs")).map_err(internal)?;
+        v.save(&st.data.join(VAULT_FILE))?;
+        audit(&st, &who, "create-vault", "zero-knowledge");
+        return Ok(Json(serde_json::json!({"ok": true})));
+    }
     let dek = key_of(&h)?.ok_or_else(|| ApiErr(StatusCode::BAD_REQUEST, "the key header is missing".into()))?;
     Workspace::init_encrypted(&st.data, &v, &dek)?;
     std::fs::create_dir_all(st.data.join("marked")).map_err(internal)?;
@@ -500,11 +516,138 @@ async fn create_vault(State(st): State<Shared>, h: HeaderMap, Json(v): Json<Vaul
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
+/// Replace `vault.json` (new passphrase, same key). Only for a zero-knowledge server: there the
+/// server cannot check the key, so it trusts an admin token with this one file.
+async fn put_vault(State(st): State<Shared>, h: HeaderMap, Json(v): Json<VaultFile>) -> ApiResult<serde_json::Value> {
+    let who = auth(&st, &h, true)?;
+    if state_of(&st) != "zero-knowledge" || v.protection != vault::Protection::ZeroKnowledge {
+        return Err(ApiErr(StatusCode::CONFLICT, "only a zero-knowledge vault can be replaced this way".into()));
+    }
+    let _g = st.blob_lock.lock().await;
+    v.save(&st.data.join(VAULT_FILE))?;
+    audit(&st, &who, "replace-vault", "");
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+// ---------------------------------------------------------------- blobs (zero-knowledge)
+/// Blob ids are plain file names. The client picks them. They are never paths.
+fn blob_path(st: &State_, id: &str) -> Result<PathBuf, ApiErr> {
+    let ok = !id.is_empty() && id.len() <= 100 && !id.starts_with('.') && id.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    if ok { Ok(st.data.join("blobs").join(id)) } else { Err(ApiErr(StatusCode::BAD_REQUEST, "bad blob id".into())) }
+}
+
+/// A tag that changes whenever the blob changes (size and write time).
+fn etag_of(p: &Path) -> Option<String> {
+    let m = std::fs::metadata(p).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some(format!("{:x}-{:x}", m.len(), t))
+}
+
+/// Blob routes work only on a zero-knowledge server, and never with a key header.
+fn blob_gate(st: &State_, h: &HeaderMap) -> Result<(), ApiErr> {
+    if state_of(st) != "zero-knowledge" {
+        return Err(ApiErr(StatusCode::CONFLICT, "this server is not in zero-knowledge mode".into()));
+    }
+    if h.contains_key("x-vfp-key") {
+        return Err(ApiErr(StatusCode::BAD_REQUEST, "a zero-knowledge server does not take the key. Remove the X-VFP-Key header.".into()));
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct BlobInfo {
+    id: String,
+    size: u64,
+    etag: String,
+}
+
+async fn list_blobs(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Vec<BlobInfo>> {
+    auth(&st, &h, false)?;
+    blob_gate(&st, &h)?;
+    let mut out = vec![];
+    if let Ok(rd) = std::fs::read_dir(st.data.join("blobs")) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if let (Ok(m), Some(etag)) = (e.metadata(), etag_of(&e.path())) {
+                out.push(BlobInfo { id: name, size: m.len(), etag });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(Json(out))
+}
+
+async fn get_blob(State(st): State<Shared>, h: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Result<Response, ApiErr> {
+    let who = auth(&st, &h, false)?;
+    blob_gate(&st, &h)?;
+    let path = blob_path(&st, &id)?;
+    let f = tokio::fs::File::open(&path).await.map_err(|_| ApiErr(StatusCode::NOT_FOUND, "no such blob".into()))?;
+    let etag = etag_of(&path).unwrap_or_default();
+    audit(&st, &who, "blob-get", "");
+    let mut r = Body::from_stream(tokio_util::io::ReaderStream::new(f)).into_response();
+    if let Ok(v) = etag.parse() {
+        r.headers_mut().insert(header::ETAG, v);
+    }
+    Ok(r)
+}
+
+/// Store a blob. `If-Match: <etag>` = replace only that version. `If-None-Match: *` = create only.
+/// A failed check gives 412, so two devices cannot overwrite each other without noticing.
+async fn put_blob(State(st): State<Shared>, h: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>, body: Body) -> Result<Response, ApiErr> {
+    let who = auth(&st, &h, true)?;
+    blob_gate(&st, &h)?;
+    let path = blob_path(&st, &id)?;
+    let if_match = h.get(header::IF_MATCH).and_then(|v| v.to_str().ok()).map(|v| v.trim().trim_matches('"').to_string());
+    let create_only = h.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).map(|v| v.trim() == "*").unwrap_or(false);
+    if if_match.is_none() && !create_only {
+        return Err(ApiErr(StatusCode::PRECONDITION_REQUIRED, "send If-Match (replace) or If-None-Match: * (create)".into()));
+    }
+    // receive into a hidden file first; the check and the rename happen under one lock
+    let tmp = st.data.join("blobs").join(format!(".tmp-{}", hex_rand(8)));
+    let result = async {
+        let mut file = tokio::fs::File::create(&tmp).await.map_err(internal)?;
+        let (mut total, mut stream) = (0u64, body.into_data_stream());
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ApiErr(StatusCode::BAD_REQUEST, format!("upload failed: {e}")))?;
+            total += chunk.len() as u64;
+            if total > st.max_upload {
+                return Err(ApiErr(StatusCode::PAYLOAD_TOO_LARGE, "blob is larger than the limit".into()));
+            }
+            file.write_all(&chunk).await.map_err(internal)?;
+        }
+        file.flush().await.map_err(internal)?;
+        drop(file);
+        let _g = st.blob_lock.lock().await;
+        let current = etag_of(&path);
+        let fine = match &if_match {
+            Some(m) => current.as_deref() == Some(m.as_str()),
+            None => current.is_none(),
+        };
+        if !fine {
+            return Err(ApiErr(StatusCode::PRECONDITION_FAILED, "the blob changed since you read it".into()));
+        }
+        tokio::fs::rename(&tmp, &path).await.map_err(internal)?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result?;
+    audit(&st, &who, "blob-put", "");
+    Ok(Json(serde_json::json!({"etag": etag_of(&path).unwrap_or_default()})).into_response())
+}
+
 fn router(st: Shared) -> Router {
     let limit = (st.max_upload as usize).saturating_add(1 << 20);
     Router::new()
         .route("/v1/info", get(info))
-        .route("/v1/vault", get(get_vault).post(create_vault))
+        .route("/v1/vault", get(get_vault).post(create_vault).put(put_vault))
+        .route("/v1/blobs", get(list_blobs))
+        .route("/v1/blobs/:id", get(get_blob).put(put_blob))
         .route("/v1/receivers", get(list_receivers).post(add_receiver))
         .route("/v1/assets", get(list_assets).post(add_asset))
         .route("/v1/mark", post(mark))
@@ -586,7 +729,7 @@ async fn run(cli: Cli) -> Result<(), String> {
         }
         Cmd::Serve { bind, max_upload_mb, jobs, plain, trust_proxy } => {
             std::fs::create_dir_all(&data).map_err(|e| format!("cannot create data folder {}: {e}", data.display()))?;
-            let probe = State_ { data: data.clone(), max_upload: 0, jobs: Semaphore::new(1), trust_proxy };
+            let probe = State_ { data: data.clone(), max_upload: 0, jobs: Semaphore::new(1), trust_proxy, blob_lock: tokio::sync::Mutex::new(()) };
             let state = state_of(&probe);
             if state == "uninitialized" && plain {
                 Workspace::init(&data).map_err(|e| e.to_string())?;
@@ -607,7 +750,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let t = new_token(&data, "admin", "first admin")?;
                 println!("No token yet. First admin token (shown once, copy it now):\n\n  {t}\n");
             }
-            let st: Shared = Arc::new(State_ { data, max_upload: max_upload_mb << 20, jobs: Semaphore::new(jobs.max(1)), trust_proxy });
+            let st: Shared = Arc::new(State_ { data, max_upload: max_upload_mb << 20, jobs: Semaphore::new(jobs.max(1)), trust_proxy, blob_lock: tokio::sync::Mutex::new(()) });
             let listener = tokio::net::TcpListener::bind(&bind).await.map_err(|e| format!("cannot listen on {bind}: {e}"))?;
             println!("vfp-server listening on {bind} (plain HTTP: the key is accepted from this machine only, or behind an HTTPS proxy with --trust-proxy)");
             axum::serve(listener, router(st).into_make_service_with_connect_info::<std::net::SocketAddr>())

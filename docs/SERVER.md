@@ -42,6 +42,21 @@ Each device unlocks with the passphrase and sends the derived data key with ever
   (passphrase from `VFP_PASSPHRASE_FILE` or stdin).
 - A lost passphrase cannot be recovered.
 
+## Zero-knowledge mode
+
+Create the vault with `vfp vault init --zero-knowledge` (or choose it in the app). The server never gets the
+passphrase or key. It stores encrypted blobs in `data/blobs/`. The pipeline routes (`/v1/assets`, `/v1/mark`, `/v1/trace`) return 409.
+
+Blob API (a key header is refused with 400):
+
+- `GET /v1/blobs` lists `{id, size, etag}`. `GET /v1/blobs/<id>` downloads. Any token may read.
+- `PUT /v1/blobs/<id>` needs an admin token and one precondition: `If-None-Match: *` (create only) or
+  `If-Match: <etag>` (replace that version). No precondition gives 428. A stale one gives 412.
+- `PUT /v1/vault` replaces `vault.json` (new passphrase). Admin only.
+- Ids: letters, digits, `.`, `_`, `-`, up to 100 characters, no leading dot.
+
+Blobs: `master.enc`, `vfp.db.enc` (the sealed database), `o-<random>.vfpenc` (originals).
+
 ## Tokens
 
 | Role | May do |

@@ -110,7 +110,7 @@ impl Backend for LocalBackend {
 
 // ---------------------------------------------------------------- remote
 #[cfg(feature = "remote")]
-pub use remote::RemoteBackend;
+pub use remote::{RemoteBackend, SealedBackend};
 
 #[cfg(feature = "remote")]
 mod remote {
@@ -292,6 +292,272 @@ mod remote {
                 r = r.query("asset", a);
             }
             self.upload(r, leaked)
+        }
+    }
+
+    // ------------------------------------------------------------ blobs and the sealed backend
+    #[derive(Debug, Clone, Deserialize)]
+    struct BlobMeta {
+        id: String,
+        etag: String,
+    }
+
+    const B_MASTER: &str = "master.enc";
+    const B_DB: &str = "vfp.db.enc";
+    const B_PREFIX: &str = "o-";
+    const DB_AAD: &[u8] = b"blob:vfp.db";
+
+    impl RemoteBackend {
+        fn blob_list(&self) -> Result<Vec<BlobMeta>> {
+            self.json(self.req("GET", "/v1/blobs"))
+        }
+
+        /// Download a blob to `dest` (through a temp file). Returns the ETag.
+        fn blob_get(&self, id: &str, dest: &Path) -> Result<String> {
+            let resp = self.req("GET", &format!("/v1/blobs/{id}")).call().map_err(fail)?;
+            let etag = resp.header("ETag").unwrap_or("").trim_matches('"').to_string();
+            let tmp = dest.with_extension("part");
+            std::io::copy(&mut resp.into_reader(), &mut std::fs::File::create(&tmp)?)?;
+            std::fs::rename(&tmp, dest)?;
+            Ok(etag)
+        }
+
+        /// Upload a blob. `if_match = None` means "create only". Returns `Ok(None)` when the
+        /// server says the blob changed (HTTP 412).
+        fn blob_put(&self, id: &str, file: &Path, if_match: Option<&str>) -> Result<Option<String>> {
+            let r = self.req("PUT", &format!("/v1/blobs/{id}"));
+            let r = match if_match {
+                Some(m) => r.set("If-Match", m),
+                None => r.set("If-None-Match", "*"),
+            };
+            match r.send(std::fs::File::open(file)?) {
+                Ok(resp) => {
+                    let v: serde_json::Value = serde_json::from_reader(resp.into_reader())?;
+                    Ok(Some(v["etag"].as_str().unwrap_or_default().to_string()))
+                }
+                Err(ureq::Error::Status(412, _)) => Ok(None),
+                Err(e) => Err(fail(e)),
+            }
+        }
+
+        /// Replace `vault.json` on a zero-knowledge server (new passphrase, same key).
+        pub fn replace_vault(&self, v: &VaultFile) -> Result<()> {
+            self.req("PUT", "/v1/vault").send_json(serde_json::to_value(v)?).map_err(fail)?;
+            Ok(())
+        }
+    }
+
+    /// Zero-knowledge mode. The server is only a store of encrypted blobs. This device keeps an
+    /// encrypted copy of the workspace in `cache`, syncs it, and does all the work itself.
+    /// The server never gets the passphrase or the key.
+    pub struct SealedBackend {
+        remote: RemoteBackend,
+        dek: Dek,
+        cache: PathBuf,
+    }
+
+    /// ETags we last saw, by blob id. A missing entry means "we have not seen this blob".
+    type Seen = std::collections::BTreeMap<String, String>;
+
+    impl SealedBackend {
+        /// Where the encrypted cache for a server lives.
+        pub fn cache_dir(home: &Path, url: &str) -> PathBuf {
+            use sha2::{Digest, Sha256};
+            let h = Sha256::digest(url.trim_end_matches('/').as_bytes());
+            home.join("zk-cache").join(h[..6].iter().map(|b| format!("{b:02x}")).collect::<String>())
+        }
+
+        /// Use a zero-knowledge server whose vault already exists.
+        pub fn open(url: &str, token: &str, dek: Dek, cache: PathBuf) -> Self {
+            // no key is ever attached to the requests
+            SealedBackend { remote: RemoteBackend::new(url, token), dek, cache }
+        }
+
+        /// Make the vault on a fresh server and upload the first (empty) workspace.
+        pub fn create(url: &str, token: &str, vault: &VaultFile, dek: Dek, cache: PathBuf) -> Result<Self> {
+            if vault.protection != crate::vault::Protection::ZeroKnowledge {
+                return err("this vault is not a zero-knowledge vault");
+            }
+            if cache.exists() {
+                std::fs::remove_dir_all(&cache)?;
+            }
+            Workspace::init_encrypted(&cache, vault, &dek)?;
+            let me = SealedBackend { remote: RemoteBackend::new(url, token), dek, cache };
+            me.remote.create_vault(vault)?;
+            me.push()?;
+            Ok(me)
+        }
+
+        fn seen_path(&self) -> PathBuf {
+            self.cache.join("sync.json")
+        }
+        fn load_seen(&self) -> Seen {
+            std::fs::read_to_string(self.seen_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        }
+        fn save_seen(&self, s: &Seen) -> Result<()> {
+            std::fs::write(self.seen_path(), serde_json::to_string(s)?)?;
+            Ok(())
+        }
+
+        fn local(&self) -> LocalBackend {
+            LocalBackend::with_key(&self.cache, Some(self.dek.clone()))
+        }
+
+        fn orig_file(&self, blob_id: &str) -> PathBuf {
+            self.cache.join("originals").join(blob_id.trim_start_matches(B_PREFIX))
+        }
+
+        /// Fetch the newest key file and database. Originals come later, only when needed.
+        fn pull(&self) -> Result<Vec<BlobMeta>> {
+            std::fs::create_dir_all(self.cache.join("originals"))?;
+            let list = self.remote.blob_list()?;
+            let vf = self.remote.vault()?.ok_or_else(|| Error("the server has no vault".into()))?;
+            vf.save(&self.cache.join(crate::vault::VAULT_FILE))?;
+            let mut seen = self.load_seen();
+            let find = |id: &str| list.iter().find(|b| b.id == id);
+            let (Some(master), Some(db)) = (find(B_MASTER), find(B_DB)) else {
+                return err("the server vault is incomplete (no key file or database). Was creating it interrupted?");
+            };
+            if seen.get(B_MASTER) != Some(&master.etag) || !self.cache.join("master.key.enc").exists() {
+                let etag = self.remote.blob_get(B_MASTER, &self.cache.join("master.key.enc"))?;
+                seen.insert(B_MASTER.into(), etag);
+            }
+            let db_file = self.cache.join("vfp.db");
+            if seen.get(B_DB) != Some(&db.etag) || !db_file.exists() {
+                let sealed = self.cache.join("vfp.db.enc");
+                let etag = self.remote.blob_get(B_DB, &sealed)?;
+                let mut input = std::io::BufReader::new(std::fs::File::open(&sealed)?);
+                let tmp = self.cache.join("vfp.db.new");
+                {
+                    let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+                    crate::vault::decrypt_stream(&self.dek.subkey("files"), DB_AAD, &mut input, &mut out)
+                        .map_err(|_| Error("wrong key for this server, or the database was changed".into()))?;
+                    std::io::Write::flush(&mut out)?;
+                }
+                drop(input);
+                std::fs::rename(&tmp, &db_file)?;
+                let _ = std::fs::remove_file(&sealed);
+                seen.insert(B_DB.into(), etag);
+            }
+            for b in list.iter().filter(|b| b.id.starts_with(B_PREFIX)) {
+                seen.insert(b.id.clone(), b.etag.clone());
+            }
+            self.save_seen(&seen)?;
+            Ok(list)
+        }
+
+        /// Download the encrypted originals this job needs (all when `only` is None).
+        fn fetch_originals(&self, list: &[BlobMeta], only: Option<&str>) -> Result<()> {
+            let wanted: Option<String> = match only {
+                Some(a) => Some(self.local_ws()?.asset(a)?.orig_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                None => None,
+            };
+            for b in list.iter().filter(|b| b.id.starts_with(B_PREFIX)) {
+                let dest = self.orig_file(&b.id);
+                if wanted.as_ref().is_some_and(|w| dest.file_name().map(|n| n.to_string_lossy() != w.as_str()).unwrap_or(true)) {
+                    continue;
+                }
+                if !dest.exists() {
+                    self.remote.blob_get(&b.id, &dest)?;
+                }
+            }
+            Ok(())
+        }
+
+        fn local_ws(&self) -> Result<Workspace> {
+            Workspace::open_with(&self.cache, Some(&self.dek))
+        }
+
+        /// Send new originals, then the sealed database. A changed server copy stops the upload.
+        fn push(&self) -> Result<()> {
+            let mut known = self.load_seen();
+            if let Ok(rd) = std::fs::read_dir(self.cache.join("originals")) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let id = format!("{B_PREFIX}{name}");
+                    if !name.ends_with(".vfpenc") || known.contains_key(&id) {
+                        continue;
+                    }
+                    match self.remote.blob_put(&id, &e.path(), None)? {
+                        Some(etag) => {
+                            known.insert(id, etag);
+                        }
+                        None => {
+                            known.insert(id, String::new()); // somebody else has it already
+                        }
+                    }
+                }
+            }
+            if !known.contains_key(B_MASTER) {
+                if let Some(etag) = self.remote.blob_put(B_MASTER, &self.cache.join("master.key.enc"), None)? {
+                    known.insert(B_MASTER.into(), etag);
+                }
+            }
+            let sealed = self.cache.join("vfp.db.enc");
+            {
+                let mut input = std::fs::File::open(self.cache.join("vfp.db"))?;
+                let mut out = std::io::BufWriter::new(std::fs::File::create(&sealed)?);
+                crate::vault::encrypt_stream(&self.dek.subkey("files"), DB_AAD, &mut input, &mut out)?;
+                std::io::Write::flush(&mut out)?;
+            }
+            let put = self.remote.blob_put(B_DB, &sealed, known.get(B_DB).map(|s| s.as_str()));
+            let _ = std::fs::remove_file(&sealed);
+            match put? {
+                Some(etag) => {
+                    known.insert(B_DB.into(), etag);
+                    self.save_seen(&known)
+                }
+                None => {
+                    // drop our copy so the next call starts from the server's version
+                    known.remove(B_DB);
+                    let _ = std::fs::remove_file(self.cache.join("vfp.db"));
+                    self.save_seen(&known)?;
+                    err("another device changed the workspace at the same moment. Your change was NOT saved. Please run it again.")
+                }
+            }
+        }
+    }
+
+    impl Backend for SealedBackend {
+        fn describe(&self) -> String {
+            format!("server {} (zero-knowledge: the server cannot read your files)", self.remote.base)
+        }
+
+        fn receivers(&self) -> Result<Vec<ReceiverInfo>> {
+            self.pull()?;
+            self.local().receivers()
+        }
+
+        fn add_receiver(&self, name: &str, note: &str) -> Result<()> {
+            self.pull()?;
+            self.local().add_receiver(name, note)?;
+            self.push()
+        }
+
+        fn assets(&self) -> Result<Vec<AssetInfo>> {
+            self.pull()?;
+            self.local().assets()
+        }
+
+        fn add_asset(&self, path: &Path, name: Option<&str>, opts: &PlanOptions) -> Result<(AssetInfo, Plan)> {
+            self.pull()?;
+            let r = self.local().add_asset(path, name, opts)?;
+            self.push()?;
+            Ok(r)
+        }
+
+        fn mark(&self, asset: &str, receivers: &[String], outdir: &Path, progress: Progress) -> Result<Vec<(String, PathBuf)>> {
+            let list = self.pull()?;
+            self.fetch_originals(&list, Some(asset))?;
+            let r = self.local().mark(asset, receivers, outdir, progress)?;
+            self.push()?;
+            Ok(r)
+        }
+
+        fn trace(&self, leaked: &Path, asset: Option<&str>) -> Result<TraceResult> {
+            let list = self.pull()?;
+            self.fetch_originals(&list, asset)?;
+            self.local().trace(leaked, asset)
         }
     }
 }
