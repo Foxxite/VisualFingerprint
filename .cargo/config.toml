@@ -1,0 +1,5 @@
+# Android 15+ phones (Pixel 10) use 16 KB memory pages. NDK r27 aligns to 4 KB unless told otherwise.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

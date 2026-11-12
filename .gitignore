@@ -20,3 +20,4 @@ test-media/
 
 # Rust
 target/
+crates/vfp-app/gen/android/.kotlin/

@@ -1,7 +1,11 @@
 # Android
 
-Status: **prepared, not built.** This computer has no Android SDK or NDK, so nothing here was compiled for Android.
-Treat every step below as untested.
+Status: **builds, installs and starts on a real phone (Pixel 10, Android 16).** The debug APK builds with
+`cargo tauri android build --apk --debug --target aarch64`. Hand-tested on the phone: the welcome screens,
+choosing the folder, the passphrase screen with strength meter, "Make one for me", encrypted workspace
+creation (64 MiB key function), dark mode, and the phone layout.
+**Not working yet:** anything that uses the file picker or the save dialog (see Known gaps).
+Not yet tried on the phone: receivers, copies, trace, the server path.
 
 ## What is ready in the code
 
@@ -26,6 +30,15 @@ Treat every step below as untested.
    cd crates/vfp-app && cargo tauri android init
    ```
 
+## Things we learned on the real phone
+
+- **16 KB memory pages.** The Pixel 10 uses 16 KB pages. The NDK r27 links for 4 KB and Android shows a
+  warning. `.cargo/config.toml` sets `-Wl,-z,max-page-size=16384` for the Android targets. Keep it.
+- **Tauri hooks.** `beforeBuildCommand` and `beforeDevCommand` run inside `frontend/`, so they must not use `--prefix`.
+- **Screen edges.** The app draws under the status bar and navigation bar. `viewport-fit=cover` and
+  `env(safe-area-inset-*)` in `style.css` keep content clear of them. The header wraps below 600 px.
+- **Size.** The debug APK is about 370 MB. The release build will be much smaller.
+
 ## Build and run
 
 ```bash
@@ -38,10 +51,11 @@ cargo tauri android build --apk         # release APK (needs a signing key)
 - **Audio and video do not work yet.** The core calls the `ffmpeg` and `ffprobe` programs. A phone has neither.
   Images work. Audio/video on Android needs a bundled FFmpeg library or the platform codecs (`MediaCodec`).
   Until then, the Android app should be used with a server (`Make copies` for video runs on the server in Protected mode).
-- **File picker.** Android returns `content://` addresses, not file paths. The core reads normal paths. The
-  dialog plugin may copy the file to app storage first; this must be checked on a real device. Saving marked
-  copies to a user folder needs the same check (Storage Access Framework).
+- **File picker and save dialog (confirmed broken).** Android returns `content://` addresses, not file
+  paths. "Save a backup…" fails with "No such file or directory (os error 2)" because the Rust code opens the
+  address as a normal path. The fix: use `tauri-plugin-fs` to read picked files into app storage first, and to
+  write results to the chosen address. This is needed for adding originals, saving copies, the key backup,
+  and tracing a leaked file. Until then, only the on-device setup works.
 - **Memory.** The cache for zero-knowledge mode is on app storage. Set `VFP_CACHE_MB` low (or add a setting) on phones.
-- **Screen size.** The layout was made for a window of 720 px or more. Check it on a phone.
 - **Passphrase on phone.** Hand typing 8 words is slow. Paste from a password manager must work: test it.
 - Multiple workspaces use folders inside app storage on Android; "Browse…" for a folder may not work.
