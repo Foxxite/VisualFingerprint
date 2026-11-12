@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use vfp_core::backend::{check_url, Backend, LocalBackend, RemoteBackend, ServerLink};
 use vfp_core::pipeline::{self, PlanOptions};
-use vfp_core::workspace::Workspace;
+use vfp_core::strength;
+use vfp_core::vault::{Dek, KdfParams, Protection, VaultFile, VAULT_FILE};
+use vfp_core::workspace::{Protection as WsProtection, Workspace};
 use vfp_core::{Error, Result};
 
 #[derive(Parser)]
@@ -43,8 +45,17 @@ enum AssetAction {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a workspace and a secret key
-    Init,
+    /// Create a workspace. It is encrypted with a passphrase unless you say --plain.
+    Init {
+        /// No encryption (not for sensitive files)
+        #[arg(long)]
+        plain: bool,
+    },
+    /// Passphrase and encryption of the workspace (or of the connected server)
+    Vault {
+        #[command(subcommand)]
+        action: VaultCmd,
+    },
     /// Save a server address and token. Later commands then use that server.
     Connect {
         url: String,
@@ -108,6 +119,54 @@ enum Cmd {
     },
 }
 
+#[derive(Subcommand)]
+enum VaultCmd {
+    /// Encrypt this workspace, or create the vault on the connected server
+    Init,
+    /// Say whether the workspace is encrypted
+    Status,
+    /// Change the passphrase of this workspace. Files are not touched.
+    Passwd,
+    /// Print a new strong passphrase (7 random words)
+    Generate,
+}
+
+/// Read a passphrase from the file in VFP_PASSPHRASE_FILE, or ask at the terminal (hidden).
+/// It is never a command-line argument.
+fn passphrase(prompt: &str) -> Result<String> {
+    if let Ok(p) = std::env::var("VFP_PASSPHRASE_FILE") {
+        let t = std::fs::read_to_string(&p).map_err(|e| Error(format!("cannot read {p}: {e}")))?;
+        return Ok(t.trim_end_matches(['\r', '\n']).to_string());
+    }
+    rpassword::prompt_password(prompt).map_err(|e| Error(format!("cannot read the passphrase ({e}). Set VFP_PASSPHRASE_FILE.")))
+}
+
+/// Ask for a NEW passphrase twice. It must be strong.
+fn new_passphrase() -> Result<String> {
+    let a = passphrase("New passphrase (or run `vfp vault generate`): ")?;
+    let s = strength::assess(&a);
+    if !s.ok {
+        return Err(Error(format!("Passphrase is too weak ({:.0} bits, need {:.0}). {}", s.bits, strength::MIN_BITS, s.advice.join(" "))));
+    }
+    if std::env::var("VFP_PASSPHRASE_FILE").is_err() && passphrase("Again: ")? != a {
+        return Err(Error("the two passphrases differ".into()));
+    }
+    Ok(a)
+}
+
+fn backup_notice(path: &Path) {
+    println!("BACK UP {}. It holds your wrapped key. Without the passphrase the data cannot be opened. There is no recovery.", path.display());
+}
+
+/// Unlock a local workspace if it has a vault.
+fn unlock_local(home: &Path) -> Result<Option<Dek>> {
+    if Workspace::protection(home) != WsProtection::Vault {
+        return Ok(None);
+    }
+    let v = VaultFile::load(&home.join(VAULT_FILE))?.ok_or_else(|| Error("vault.json is missing".into()))?;
+    Ok(Some(v.unlock(&passphrase("Passphrase: ")?)?))
+}
+
 fn print_plan(p: &pipeline::Plan, max_receivers: u64, eps: f64) {
     println!("  code length: {} symbols", p.m);
     println!("  planned for up to {max_receivers} receivers, false-accusation rate {eps}");
@@ -124,35 +183,119 @@ fn pick_backend(cli: &Cli) -> Result<Box<dyn Backend>> {
         if let Some(url) = &cli.server {
             check_url(url)?;
             let token = cli.token.clone().ok_or_else(|| Error("a server needs a token: --token or VFP_TOKEN".into()))?;
-            return Ok(Box::new(RemoteBackend::new(url, &token)));
+            return Ok(Box::new(remote_unlocked(url, &token)?));
         }
         if let Some(l) = ServerLink::load(&cli.home)? {
-            return Ok(Box::new(RemoteBackend::new(&l.url, &l.token)));
+            return Ok(Box::new(remote_unlocked(&l.url, &l.token)?));
         }
     }
-    Ok(Box::new(LocalBackend::new(&cli.home)))
+    Ok(Box::new(LocalBackend::with_key(&cli.home, unlock_local(&cli.home)?)))
+}
+
+/// Connect to a server. If it has a vault, ask for the passphrase and unlock it here (the server never sees it).
+fn remote_unlocked(url: &str, token: &str) -> Result<RemoteBackend> {
+    let plain = RemoteBackend::new(url, token);
+    match plain.vault()? {
+        None => Ok(plain),
+        Some(v) => {
+            let dek = v.unlock(&passphrase("Passphrase: ")?)?;
+            RemoteBackend::new(url, token).with_key(Some(dek))
+        }
+    }
 }
 
 fn run(cli: Cli) -> Result<u8> {
     let home = cli.home.clone();
     match &cli.cmd {
-        Cmd::Init => {
-            let existed = home.join("master.key").exists();
-            Workspace::init(&home)?;
+        Cmd::Init { plain } => {
             let abs = std::path::absolute(&home).unwrap_or(home.clone());
-            println!("Workspace ready: {}", abs.display());
-            if !existed {
-                println!("A new secret key was made: {}", abs.join("master.key").display());
+            if *plain {
+                let existed = home.join("master.key").exists();
+                Workspace::init(&home)?;
+                println!("Workspace ready: {}", abs.display());
+                if !existed {
+                    println!("A new secret key was made: {}", abs.join("master.key").display());
+                }
+                println!("WARNING: nothing here is encrypted. Run `vfp vault init` to encrypt it.");
+                println!("BACK UP master.key. Without it you cannot trace a leak. Never share it.");
+            } else if home.join("vfp.db").exists() {
+                return Err(Error("a workspace already exists here. To encrypt it run: vfp vault init".into()));
+            } else {
+                let pass = new_passphrase()?;
+                let (vf, dek) = VaultFile::create(&pass, Protection::Protected, KdfParams::DESKTOP)?;
+                Workspace::init_encrypted(&home, &vf, &dek)?;
+                println!("Encrypted workspace ready: {}", abs.display());
+                backup_notice(&abs.join(VAULT_FILE));
             }
-            println!("BACK UP master.key. Without it you cannot trace a leak. Never share it.");
+            return Ok(0);
+        }
+        Cmd::Vault { action } => {
+            match action {
+                VaultCmd::Generate => {
+                    let p = strength::generate();
+                    println!("{p}");
+                    eprintln!("({:.0} bits). Write it down and keep it safe. There is no recovery.", strength::assess(&p).bits);
+                }
+                VaultCmd::Status => {
+                    let abs = std::path::absolute(&home).unwrap_or(home.clone());
+                    match (Workspace::protection(&home), home.join("vfp.db").exists()) {
+                        (WsProtection::Vault, _) => println!("{}: encrypted (vault.json present)", abs.display()),
+                        (_, true) => println!("{}: NOT encrypted. Run: vfp vault init", abs.display()),
+                        _ => println!("{}: no workspace here", abs.display()),
+                    }
+                    if let Some(l) = ServerLink::load(&home)? {
+                        let info = RemoteBackend::new(&l.url, &l.token).info()?;
+                        println!("server {}: {}", l.url, info["protection"].as_str().unwrap_or("?"));
+                    }
+                }
+                VaultCmd::Init => {
+                    if !cli.local {
+                        if let Some(l) = ServerLink::load(&home)? {
+                            let r = RemoteBackend::new(&l.url, &l.token);
+                            if r.vault()?.is_some() {
+                                return Err(Error("the server already has a vault".into()));
+                            }
+                            let pass = new_passphrase()?;
+                            let (vf, dek) = VaultFile::create(&pass, Protection::Protected, KdfParams::DESKTOP)?;
+                            RemoteBackend::new(&l.url, &l.token).with_key(Some(dek))?.create_vault(&vf)?;
+                            println!("The server vault is ready. The passphrase never left this device (the server holds only the key, per request, over HTTPS).");
+                            return Ok(0);
+                        }
+                    }
+                    if Workspace::protection(&home) == WsProtection::Vault {
+                        return Err(Error("this workspace is already encrypted".into()));
+                    }
+                    if !home.join("vfp.db").exists() {
+                        return Err(Error("no workspace here. Run: vfp init".into()));
+                    }
+                    let pass = new_passphrase()?;
+                    let (vf, dek) = VaultFile::create(&pass, Protection::Protected, KdfParams::DESKTOP)?;
+                    Workspace::migrate_to_vault(&home, &vf, &dek)?;
+                    println!("Encrypted. Originals and master.key are now sealed; the plain ones were removed.");
+                    backup_notice(&home.join(VAULT_FILE));
+                }
+                VaultCmd::Passwd => {
+                    let path = home.join(VAULT_FILE);
+                    let v = VaultFile::load(&path)?.ok_or_else(|| Error("this workspace is not encrypted".into()))?;
+                    let old = passphrase("Current passphrase: ")?;
+                    v.unlock(&old)?;
+                    let new = new_passphrase()?;
+                    v.change_passphrase(&old, &new)?.save(&path)?;
+                    println!("Passphrase changed. Files were not touched.");
+                    backup_notice(&path);
+                }
+            }
             return Ok(0);
         }
         Cmd::Connect { url, token } => {
             check_url(url)?;
             let remote = RemoteBackend::new(url, token);
             let info = remote.info()?;
+            if info["protection"] == "uninitialized" {
+                println!("This server has no vault yet. Run: vfp vault init");
+            }
             ServerLink { url: url.clone(), token: token.clone() }.save(&home)?;
-            println!("Connected to {url} (role: {}, assets: {}).", info["role"].as_str().unwrap_or("?"), info["assets"]);
+            println!("Connected to {url} (role: {}, protection: {}).", info["role"].as_str().unwrap_or("?"), info["protection"].as_str().unwrap_or("?"));
             println!("Later commands use this server. No original file is stored on this device.");
             return Ok(0);
         }
@@ -178,7 +321,7 @@ fn run(cli: Cli) -> Result<u8> {
         eprintln!("[{}]", be.describe());
     }
     match cli.cmd {
-        Cmd::Init | Cmd::Connect { .. } | Cmd::Disconnect => unreachable!(),
+        Cmd::Init { .. } | Cmd::Vault { .. } | Cmd::Connect { .. } | Cmd::Disconnect => unreachable!(),
         Cmd::Receivers { action, names, note } => match action {
             RecAction::Add => {
                 for n in &names {

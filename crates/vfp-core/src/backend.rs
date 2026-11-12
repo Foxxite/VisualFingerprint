@@ -8,6 +8,7 @@
 
 use crate::error::{err, Result};
 use crate::pipeline::{self, Plan, PlanOptions, TraceResult};
+use crate::vault::Dek;
 use crate::workspace::Workspace;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -52,14 +53,19 @@ pub fn asset_info(ws: &Workspace, a: &crate::workspace::Asset) -> Result<AssetIn
 // ---------------------------------------------------------------- local
 pub struct LocalBackend {
     pub home: PathBuf,
+    dek: Option<Dek>,
 }
 
 impl LocalBackend {
     pub fn new(home: impl Into<PathBuf>) -> Self {
-        LocalBackend { home: home.into() }
+        LocalBackend { home: home.into(), dek: None }
+    }
+    /// Open an encrypted workspace with its key.
+    pub fn with_key(home: impl Into<PathBuf>, dek: Option<Dek>) -> Self {
+        LocalBackend { home: home.into(), dek }
     }
     fn ws(&self) -> Result<Workspace> {
-        Workspace::open(&self.home)
+        Workspace::open_with(&self.home, self.dek.as_ref())
     }
 }
 

@@ -12,3 +12,4 @@ path = "src/main.rs"
 vfp-core = { path = "../vfp-core", features = ["remote"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
+rpassword = "7"
