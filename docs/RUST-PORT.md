@@ -15,7 +15,7 @@ The Python code in `src/vfp/` stays the **reference**. The Rust code must give t
 | `Backend` trait (`LocalBackend`, `RemoteBackend`) | done, see `docs/SERVER.md` |
 | `vfp-server` (axum, tokens, Docker files) | done and tested; Docker image built and smoke-tested |
 | Desktop app (Tauri 2 + React, `crates/vfp-app`) | built and starts; screens not yet tested by hand |
-| Android app | builds and runs on a Pixel 10 (setup and passphrase work); file picker / save dialog not yet working (`content://`), see `docs/ANDROID.md` |
+| Android app | builds and runs on a Pixel 10 (setup, receivers, copies, trace and key backup tested; images only), see `docs/ANDROID.md` |
 
 ## Build and run
 

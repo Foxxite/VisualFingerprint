@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Asset, errText, onProgress, pickFile, pickFolder, Plan, Receiver } from "./api";
+import { api, Asset, baseName, errText, isAndroid, onProgress, pickFile, pickFolder, pickSave, Plan, Receiver } from "./api";
 
 export default function MakeCopies() {
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -67,15 +67,29 @@ export default function MakeCopies() {
     });
 
   const run = async () => {
-    const dir = await pickFolder("Where should the copies go?");
-    if (!dir) return;
+    // Android has no folder paths: the copies are made in app storage, then saved one by one.
+    const dir = isAndroid ? "" : await pickFolder("Where should the copies go?");
+    if (dir === null) return;
     setBusy(true);
     setDone([]);
     setProg([0, 1]);
     setMsg("");
     try {
-      setDone(await api.makeCopies(asset, [...picked], dir));
-      setMsg("Done.");
+      const made = await api.makeCopies(asset, [...picked], dir);
+      setDone(made);
+      if (isAndroid) {
+        let saved = 0;
+        for (const [r, p] of made) {
+          setMsg(`Save the copy for ${r} (${saved + 1} of ${made.length})…`);
+          const dest = await pickSave(`Save the copy for ${r}`, baseName(p));
+          if (!dest) break;
+          await api.copyOut(p, dest);
+          saved++;
+        }
+        setMsg(saved === made.length ? "Done. All copies saved." : `Saved ${saved} of ${made.length}. The rest are in the app's storage.`);
+      } else {
+        setMsg("Done.");
+      }
       await load();
     } catch (x) {
       setMsg(errText(x));
@@ -165,7 +179,7 @@ export default function MakeCopies() {
           <button className="primary" disabled={!ok} onClick={run}>
             Make {picked.size || ""} cop{picked.size === 1 ? "y" : "ies"}…
           </button>
-          <span className={msg === "Done." || msg.startsWith("Registered") ? "ok" : msg ? "err" : "muted"}>{msg}</span>
+          <span className={msg.startsWith("Done.") || msg.startsWith("Registered") ? "ok" : msg ? "err" : "muted"}>{msg}</span>
         </div>
         {prog && (
           <div className="bar" style={{ marginTop: 12 }}>

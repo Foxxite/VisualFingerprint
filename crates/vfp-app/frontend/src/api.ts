@@ -44,6 +44,7 @@ export const api = {
     invoke<[Asset, Plan]>("add_asset", { path, name, maxReceivers }),
   makeCopies: (asset: string, receivers: string[], outdir: string) =>
     invoke<[string, string][]>("make_copies", { asset, receivers, outdir }),
+  copyOut: (src: string, dest: string) => invoke<void>("copy_out", { src, dest }),
   trace: (path: string, asset: string | null) => invoke<TraceResult>("trace_file", { path, asset }),
   saveReport: (result: TraceResult, leaked: string, dest: string) =>
     invoke<void>("save_report", { result, leaked, dest }),
@@ -61,5 +62,9 @@ export const pickFolder = async (title: string): Promise<string | null> => {
   return typeof r === "string" ? r : null;
 };
 export const pickSave = (title: string, defaultPath: string) => save({ title, defaultPath });
+
+/** True inside the Android app. There the pickers return content:// addresses and there are no folder paths. */
+export const isAndroid = /Android/i.test(navigator.userAgent);
+export const baseName = (p: string) => p.split(/[\/]/).pop() || "copy";
 
 export const errText = (x: unknown) => (typeof x === "string" ? x : x instanceof Error ? x.message : JSON.stringify(x));

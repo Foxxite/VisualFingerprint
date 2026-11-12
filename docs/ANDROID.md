@@ -3,9 +3,10 @@
 Status: **builds, installs and starts on a real phone (Pixel 10, Android 16).** The debug APK builds with
 `cargo tauri android build --apk --debug --target aarch64`. Hand-tested on the phone: the welcome screens,
 choosing the folder, the passphrase screen with strength meter, "Make one for me", encrypted workspace
-creation (64 MiB key function), dark mode, and the phone layout.
-**Not working yet:** anything that uses the file picker or the save dialog (see Known gaps).
-Not yet tried on the phone: receivers, copies, trace, the server path.
+creation (64 MiB key function), dark mode, the phone layout, adding receivers, registering an image from the
+file picker, making copies (one save dialog per copy), tracing a saved copy (it named the right receiver),
+and the key backup.
+Not yet tried on the phone: the server path, saving the trace report, pasting a passphrase.
 
 ## What is ready in the code
 
@@ -51,11 +52,11 @@ cargo tauri android build --apk         # release APK (needs a signing key)
 - **Audio and video do not work yet.** The core calls the `ffmpeg` and `ffprobe` programs. A phone has neither.
   Images work. Audio/video on Android needs a bundled FFmpeg library or the platform codecs (`MediaCodec`).
   Until then, the Android app should be used with a server (`Make copies` for video runs on the server in Protected mode).
-- **File picker and save dialog (confirmed broken).** Android returns `content://` addresses, not file
-  paths. "Save a backup…" fails with "No such file or directory (os error 2)" because the Rust code opens the
-  address as a normal path. The fix: use `tauri-plugin-fs` to read picked files into app storage first, and to
-  write results to the chosen address. This is needed for adding originals, saving copies, the key backup,
-  and tracing a leaked file. Until then, only the on-device setup works.
+- **File picker and save dialog (fixed, tested on the phone).** Android returns `content://` addresses, not
+  paths. The Rust side (`tauri-plugin-fs`) opens them: a picked file is copied into app cache with its real
+  extension (found from the first bytes) and used from there. Results are written to the chosen address.
+  There is no folder picker on Android, so "Make copies" saves the copies in app storage and then opens one
+  save dialog per copy. A registered original is named `picked`, because the address has no real file name.
 - **Memory.** The cache for zero-knowledge mode is on app storage. Set `VFP_CACHE_MB` low (or add a setting) on phones.
 - **Passphrase on phone.** Hand typing 8 words is slow. Paste from a password manager must work: test it.
 - Multiple workspaces use folders inside app storage on Android; "Browse…" for a folder may not work.

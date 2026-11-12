@@ -39,6 +39,85 @@ fn kdf_params() -> KdfParams {
 
 type Res<T> = Result<T, String>;
 
+// ---- Android file addresses -------------------------------------------------------------------
+// On Android the file picker and the save dialog give `content://` addresses, not paths.
+// The core reads normal paths. So we copy a picked file into the app cache first, and copy a
+// result out to the saved address afterwards. On a computer these helpers pass paths through.
+
+fn is_uri(s: &str) -> bool {
+    s.starts_with("content://")
+}
+
+fn open_any(app: &AppHandle, p: &str, write: bool) -> Res<std::fs::File> {
+    use std::str::FromStr;
+    use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
+    let fp = FilePath::from_str(p).map_err(e)?;
+    let mut o = OpenOptions::new();
+    if write {
+        o.write(true).truncate(true).create(true);
+    } else {
+        o.read(true);
+    }
+    app.fs().open(fp, o).map_err(e)
+}
+
+/// Guess the file type from the first bytes. A `content://` address has no file extension.
+fn sniff_ext(path: &Path) -> &'static str {
+    use std::io::Read;
+    let mut b = [0u8; 16];
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut b)).unwrap_or(0);
+    let b = &b[..n];
+    if b.starts_with(&[0x89, b'P', b'N', b'G']) { "png" }
+    else if b.starts_with(&[0xFF, 0xD8, 0xFF]) { "jpg" }
+    else if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" { "webp" }
+    else if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WAVE" { "wav" }
+    else if b.starts_with(b"BM") { "bmp" }
+    else if b.starts_with(&[b'I', b'I', 42, 0]) || b.starts_with(&[b'M', b'M', 0, 42]) { "tif" }
+    else if b.starts_with(b"fLaC") { "flac" }
+    else if b.starts_with(b"OggS") { "ogg" }
+    else if b.starts_with(b"ID3") { "mp3" }
+    else if b.len() >= 8 && &b[4..8] == b"ftyp" { "mp4" }
+    else if b.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) { "mkv" }
+    else { "bin" }
+}
+
+/// A real file path for the core. A `content://` address is copied into the app cache.
+fn stage_in(app: &AppHandle, p: &str) -> Res<PathBuf> {
+    if !is_uri(p) {
+        return Ok(PathBuf::from(p));
+    }
+    let dir = app.path().app_cache_dir().map_err(e)?.join("picked");
+    let _ = std::fs::remove_dir_all(&dir); // only our own cache folder
+    std::fs::create_dir_all(&dir).map_err(e)?;
+    let mut src = open_any(app, p, false)?;
+    let tmp = dir.join("picked.bin");
+    let mut out = std::fs::File::create(&tmp).map_err(e)?;
+    std::io::copy(&mut src, &mut out).map_err(e)?;
+    drop(out);
+    let fin = dir.join(format!("picked.{}", sniff_ext(&tmp)));
+    std::fs::rename(&tmp, &fin).map_err(e)?;
+    Ok(fin)
+}
+
+/// Copy a finished file to where the user saved it (a path or a `content://` address).
+fn copy_to(app: &AppHandle, src: &Path, dest: &str) -> Res<()> {
+    if is_uri(dest) {
+        let mut input = std::fs::File::open(src).map_err(e)?;
+        let mut out = open_any(app, dest, true)?;
+        std::io::copy(&mut input, &mut out).map_err(e)?;
+        Ok(())
+    } else {
+        std::fs::copy(src, dest).map(|_| ()).map_err(e)
+    }
+}
+
+/// Copy a result file (made by `make_copies`) to a place the user picked.
+#[tauri::command]
+fn copy_out(app: AppHandle, src: String, dest: String) -> Res<()> {
+    copy_to(&app, Path::new(&src), &dest)
+}
+
+
 fn e<E: std::fmt::Display>(x: E) -> String {
     x.to_string()
 }
@@ -423,8 +502,7 @@ fn export_key(app: AppHandle, dest: String) -> Res<()> {
     if !key.exists() {
         return Err("This device holds no key. The key is on your server.".into());
     }
-    std::fs::copy(key, dest).map_err(e)?;
-    Ok(())
+    copy_to(&app, &key, &dest)
 }
 
 #[tauri::command]
@@ -457,14 +535,23 @@ async fn assets(app: AppHandle) -> Res<Vec<AssetInfo>> {
 
 /// What can this file carry? Runs on this device only. Nothing is stored.
 #[tauri::command]
-async fn preview_file(path: String, max_receivers: u64) -> Res<Plan> {
-    work(move || pipeline::plan_file(Path::new(&path), &PlanOptions { max_receivers, ..Default::default() }).map_err(e)).await
+async fn preview_file(app: AppHandle, path: String, max_receivers: u64) -> Res<Plan> {
+    work(move || {
+        let path = stage_in(&app, &path)?;
+        pipeline::plan_file(&path, &PlanOptions { max_receivers, ..Default::default() }).map_err(e)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn add_asset(app: AppHandle, path: String, name: Option<String>, max_receivers: u64) -> Res<(AssetInfo, Plan)> {
     let b = backend(&app)?;
-    work(move || b.add_asset(Path::new(&path), name.as_deref(), &PlanOptions { max_receivers, ..Default::default() }).map_err(e)).await
+    let ap = app.clone();
+    work(move || {
+        let path = stage_in(&ap, &path)?;
+        b.add_asset(&path, name.as_deref(), &PlanOptions { max_receivers, ..Default::default() }).map_err(e)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -475,7 +562,15 @@ async fn make_copies(app: AppHandle, asset: String, receivers: Vec<String>, outd
         let show = |done: usize, total: usize| {
             let _ = ap.emit("progress", serde_json::json!({"done": done, "total": total}));
         };
-        let out = b.mark(&asset, &receivers, Path::new(&outdir), Some(&show)).map_err(e)?;
+        // On Android there is no folder path. Make the copies in app storage; the app then saves each one.
+        let dir = if outdir.is_empty() || is_uri(&outdir) {
+            let d = ap.path().app_data_dir().map_err(e)?.join("copies");
+            std::fs::create_dir_all(&d).map_err(e)?;
+            d
+        } else {
+            PathBuf::from(&outdir)
+        };
+        let out = b.mark(&asset, &receivers, &dir, Some(&show)).map_err(e)?;
         Ok(out.into_iter().map(|(r, p)| (r, p.display().to_string())).collect())
     })
     .await
@@ -484,13 +579,24 @@ async fn make_copies(app: AppHandle, asset: String, receivers: Vec<String>, outd
 #[tauri::command]
 async fn trace_file(app: AppHandle, path: String, asset: Option<String>) -> Res<TraceResult> {
     let b = backend(&app)?;
-    work(move || b.trace(Path::new(&path), asset.as_deref().filter(|a| !a.is_empty())).map_err(e)).await
+    let ap = app.clone();
+    work(move || {
+        let path = stage_in(&ap, &path)?;
+        b.trace(&path, asset.as_deref().filter(|a| !a.is_empty())).map_err(e)
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_report(result: TraceResult, leaked: String, dest: String) -> Res<()> {
-    let text = pipeline::report_text(&result, Path::new(&leaked)).map_err(e)?;
-    std::fs::write(dest, text).map_err(e)
+fn save_report(app: AppHandle, result: TraceResult, leaked: String, dest: String) -> Res<()> {
+    let name = if is_uri(&leaked) { "the leaked file".to_string() } else { leaked.clone() };
+    let text = pipeline::report_text(&result, Path::new(&name)).map_err(e)?;
+    let tmp = app.path().app_cache_dir().map_err(e)?.join("report.txt");
+    std::fs::create_dir_all(tmp.parent().unwrap()).map_err(e)?;
+    std::fs::write(&tmp, text).map_err(e)?;
+    let r = copy_to(&app, &tmp, &dest);
+    let _ = std::fs::remove_file(&tmp);
+    r
 }
 
 #[cfg_attr(any(target_os = "android", target_os = "ios"), tauri::mobile_entry_point)]
@@ -498,6 +604,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Keys::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             app_state,
             check_strength,
@@ -517,6 +624,7 @@ pub fn run() {
             connect_server,
             disconnect_server,
             export_key,
+            copy_out,
             receivers,
             add_receivers,
             assets,

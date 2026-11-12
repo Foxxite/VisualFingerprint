@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errText, pickFolder, WsItem } from "./api";
+import { api, errText, isAndroid, pickFolder, WsItem } from "./api";
 
 /// The list of workspaces: open, add, rename, forget. Every workspace has its own key, server link and data.
 export default function Workspaces({ onChange, hideIfEmpty }: { onChange: () => void; hideIfEmpty?: boolean }) {
@@ -91,11 +91,18 @@ export default function Workspaces({ onChange, hideIfEmpty }: { onChange: () => 
       <label>Folder</label>
       <div className="row">
         <input type="text" style={{ flex: 1 }} value={folder} onChange={(e) => setFolder(e.target.value)} />
-        <button className="secondary" onClick={browse}>
-          Browse…
-        </button>
+        {!isAndroid && (
+          <button className="secondary" onClick={browse}>
+            Browse…
+          </button>
+        )}
       </div>
-      <button className="primary" style={{ marginTop: 10 }} disabled={!name.trim() || !folder.trim()} onClick={() => run(() => api.addWorkspace(name, folder), true)}>
+      <button className="primary" style={{ marginTop: 10 }} disabled={!name.trim() || (!folder.trim() && !isAndroid)} onClick={() => run(async () => {
+        // On Android there is no folder picker: use a new folder next to the default workspace.
+        let f = folder.trim();
+        if (!f) f = `${await api.defaultWorkspace()}-${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+        await api.addWorkspace(name, f);
+      }, true)}>
         Add and set up
       </button>
       {msg && <p className="err">{msg}</p>}

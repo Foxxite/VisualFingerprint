@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, errText, pickFolder, pickSave } from "./api";
+import { api, errText, isAndroid, pickFolder, pickSave } from "./api";
 import Passphrase from "./Passphrase";
 import Workspaces from "./Workspaces";
 
@@ -86,9 +86,11 @@ export default function Setup({ onDone }: { onDone: () => void }) {
             </p>
             <code>{folder || dflt}</code>
             <div className="row" style={{ marginTop: 14 }}>
-              <button className="secondary" onClick={browse}>
-                Choose a folder…
-              </button>
+              {!isAndroid && (
+                <button className="secondary" onClick={browse}>
+                  Choose a folder…
+                </button>
+              )}
               <button className="primary" onClick={() => setStep("protect")}>
                 Use this folder
               </button>
