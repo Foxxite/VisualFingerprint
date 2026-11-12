@@ -106,7 +106,9 @@ LEAKER: carol
 | `--slots` | Symbols per image, or per segment for audio and video. | automatic: short files pack more symbols |
 | `--crf` | Video only: x264 quality of marked copies. Higher = smaller file, lower fidelity. | 16 |
 
-The workspace folder is `--home`, `$VFP_HOME`, or `./.vfp`.
+The workspace folder is `--home`, `$VFP_HOME`, or `./.vfp`. Use a different folder for each workspace.
+The desktop app keeps a list of workspaces (Workspace tab): open, add, rename and forget. Each has its own receivers,
+originals, key and server link. Switching wipes the key of the old one from memory.
 
 ---
 

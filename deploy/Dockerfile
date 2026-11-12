@@ -15,5 +15,6 @@ USER vfp
 ENV VFP_DATA=/data VFP_BIND=0.0.0.0:8443
 VOLUME /data
 EXPOSE 8443
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["vfp-server", "health"]
 ENTRYPOINT ["vfp-server"]
 CMD ["serve"]

@@ -47,3 +47,8 @@ label { display: block; font-size: 14px; margin: 10px 0 4px; }
 .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 12px; }
 .checks label { margin: 2px 0; display: flex; gap: 8px; align-items: center; }
 code { font-size: 13px; word-break: break-all; }
+
+.ws-list { list-style: none; padding: 0; margin: 8px 0 16px; display: flex; flex-direction: column; gap: 8px; }
+.ws-list li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border, #8884); border-radius: 8px; }
+.ws-list li.on { border-color: var(--accent, #4a7cff); }
+.ws-list code { word-break: break-all; }

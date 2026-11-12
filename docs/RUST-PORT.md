@@ -13,9 +13,9 @@ The Python code in `src/vfp/` stays the **reference**. The Rust code must give t
 | Workspace (SQLite, `master.key`) | done, same files as Python. Either program opens the other's workspace. |
 | `vfp` command line | done: `init`, `receivers`, `asset`, `mark`, `trace` (no `gui`) |
 | `Backend` trait (`LocalBackend`, `RemoteBackend`) | done, see `docs/SERVER.md` |
-| `vfp-server` (axum, tokens, Docker files) | done and tested; Docker image not built yet |
+| `vfp-server` (axum, tokens, Docker files) | done and tested; Docker image built and smoke-tested |
 | Desktop app (Tauri 2 + React, `crates/vfp-app`) | built and starts; screens not yet tested by hand |
-| Android app | not started |
+| Android app | prepared (library entry point, mobile key settings, `docs/ANDROID.md`); not built, no SDK here |
 
 ## Build and run
 
@@ -119,7 +119,7 @@ The 240x240 clip and an 8 s 4K excerpt also trace (untouched, CRF 30, scale, tri
 
 ## Next steps
 
-1. Build and test the Docker image. Job ids with progress for long traces.
+1. Job ids with progress for long traces. Test Protected mode behind an HTTPS proxy.
 2. Test the desktop app by hand. Add installers with FFmpeg bundled, and a cancel button.
 3. Android: images first; audio and video need a decoder that does not use the `ffmpeg` program.
 4. Choose a licence (x264 and FFmpeg builds may decide it).

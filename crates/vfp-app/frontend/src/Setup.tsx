@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, errText, pickFolder, pickSave } from "./api";
 import Passphrase from "./Passphrase";
+import Workspaces from "./Workspaces";
 
 export default function Setup({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<"choose" | "folder" | "protect" | "server" | "backup">("choose");
@@ -62,6 +63,7 @@ export default function Setup({ onDone }: { onDone: () => void }) {
           Give each person a copy that looks the same but carries a hidden mark. If a copy leaks, find out who leaked it.
         </p>
 
+        {step === "choose" && <Workspaces hideIfEmpty onChange={onDone} />}
         {step === "choose" && (
           <div className="grid2">
             <button className="card choice" onClick={toFolder}>

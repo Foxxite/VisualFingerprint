@@ -20,6 +20,17 @@ The server speaks plain HTTP. For the internet, put an HTTPS proxy (Caddy, nginx
 and start the server with `--trust-proxy`. See [SECURITY.md](SECURITY.md).
 **Back up the data folder (volume).** Without the key nobody can trace a leak.
 
+### Docker notes (built and tested)
+
+- Image: about 780 MB (Debian slim, FFmpeg 5.1, the server). It runs as user `vfp` (uid 10001). Data is in `/data`.
+- A health check calls `vfp-server health`, which asks `GET /healthz` (answers `ok`, shows no data).
+- Inside Docker, a client on your host does not look like "this machine" to the server. So **Protected mode
+  refuses the key over plain HTTP, even on `127.0.0.1:8443`**. Use an HTTPS proxy with `VFP_TRUST_PROXY=true`,
+  or **zero-knowledge mode**, which sends no key and works over plain HTTP on a trusted network.
+- Tested: build, start, token output, volume survives restart, health `healthy`, zero-knowledge vault, receivers,
+  asset and marking through the CLI, and the data folder holds no plain names.
+- Not tested: Protected mode behind a real HTTPS proxy, ARM images, audio/video jobs in the container.
+
 ## Encryption (Protected mode)
 
 A new server is **uninitialized**. It refuses data until an admin creates a vault:
@@ -106,4 +117,4 @@ You can also use `--server URL --token T` or the variables `VFP_SERVER` and `VFP
 
 - Requests are synchronous: a long video trace keeps the connection open. A job id with progress comes later.
 - Uploads are not resumable.
-- Docker image not built or tested yet. Server tested with `cargo test -p vfp-server` (real process, real HTTP).
+- Server tested with `cargo test -p vfp-server` (real process, real HTTP).

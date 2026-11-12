@@ -3,3 +3,6 @@ target
 test-media
 .vfp
 data
+test-workspaces
+**/node_modules
+crates/vfp-app/frontend/dist

@@ -15,5 +15,8 @@ services:
     environment:
       VFP_MAX_UPLOAD_MB: "4096"
       VFP_JOBS: "2"
+      # Protected mode only: the key header is accepted only over HTTPS. Behind an HTTPS proxy
+      # that sets X-Forwarded-Proto, uncomment this. Never expose the port without the proxy.
+      # VFP_TRUST_PROXY: "true"
 volumes:
   vfp-data:

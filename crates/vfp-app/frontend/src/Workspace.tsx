@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, AppState, errText, pickSave } from "./api";
 import Passphrase from "./Passphrase";
+import Workspaces from "./Workspaces";
 
 export default function Workspace({ state, onChange }: { state: AppState; onChange: () => void }) {
   const [url, setUrl] = useState("");
@@ -63,6 +64,7 @@ export default function Workspace({ state, onChange }: { state: AppState; onChan
 
   return (
     <div className="page">
+      <Workspaces onChange={onChange} />
       <div className="card">
         <h2>Where your data is</h2>
         <p>

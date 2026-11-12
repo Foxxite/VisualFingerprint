@@ -65,6 +65,11 @@ enum Cmd {
     /// Encrypt an existing plain data folder. Reads the passphrase from the file in
     /// VFP_PASSPHRASE_FILE, or from the first line of standard input.
     Migrate,
+    /// Ask a running server on this machine if it is up (exit 0 = yes). For container health checks.
+    Health {
+        #[arg(long, env = "VFP_BIND", default_value = "0.0.0.0:8443")]
+        bind: String,
+    },
     /// Manage API tokens
     Token {
         #[command(subcommand)]
@@ -644,6 +649,7 @@ async fn put_blob(State(st): State<Shared>, h: HeaderMap, axum::extract::Path(id
 fn router(st: Shared) -> Router {
     let limit = (st.max_upload as usize).saturating_add(1 << 20);
     Router::new()
+        .route("/healthz", get(|| async { "ok" }))
         .route("/v1/info", get(info))
         .route("/v1/vault", get(get_vault).post(create_vault).put(put_vault))
         .route("/v1/blobs", get(list_blobs))
@@ -726,6 +732,23 @@ async fn run(cli: Cli) -> Result<(), String> {
             println!("Done. The data folder is encrypted. Back up {}.", data.join(VAULT_FILE).display());
             println!("Clients now need the passphrase. Lose it and the data is gone.");
             Ok(())
+        }
+        Cmd::Health { bind } => {
+            use std::io::{Read, Write};
+            let port = bind.rsplit(':').next().unwrap_or("8443");
+            let mut c = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).map_err(|e| format!("not reachable: {e}"))?;
+            c.set_read_timeout(Some(std::time::Duration::from_secs(3))).ok();
+            c.write_all(b"GET /healthz HTTP/1.0
+Host: localhost
+
+").map_err(|e| e.to_string())?;
+            let mut out = String::new();
+            c.read_to_string(&mut out).map_err(|e| e.to_string())?;
+            if out.starts_with("HTTP/1.1 200") || out.starts_with("HTTP/1.0 200") {
+                Ok(())
+            } else {
+                Err("the server answered, but not with 200".into())
+            }
         }
         Cmd::Serve { bind, max_upload_mb, jobs, plain, trust_proxy } => {
             std::fs::create_dir_all(&data).map_err(|e| format!("cannot create data folder {}: {e}", data.display()))?;

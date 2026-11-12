@@ -7,6 +7,7 @@ export interface AppState {
   mode: Mode; place: string; server_url: string | null; home: string;
   encrypted: boolean; locked: boolean; needs_vault: boolean; zero_knowledge: boolean;
 }
+export interface WsItem { name: string; path: string; current: boolean; ready: boolean; server: string | null }
 export interface Strength { bits: number; ok: boolean; capped: boolean; advice: string[] }
 export interface Receiver { id: number; name: string; note: string }
 export interface Asset { id: number; name: string; kind: string; m: number; max_receivers: number; copies: number }
@@ -26,6 +27,11 @@ export const api = {
   createServerVault: (passphrase: string, zeroKnowledge: boolean) => invoke<void>("create_server_vault", { passphrase, zeroKnowledge }),
   changePassphrase: (old: string, nw: string) => invoke<void>("change_passphrase", { old, new: nw }),
   encryptWorkspace: (passphrase: string) => invoke<string>("encrypt_workspace", { passphrase }),
+  listWorkspaces: () => invoke<WsItem[]>("list_workspaces"),
+  switchWorkspace: (path: string) => invoke<void>("switch_workspace", { path }),
+  addWorkspace: (name: string, folder: string) => invoke<void>("add_workspace", { name, folder }),
+  removeWorkspace: (path: string) => invoke<void>("remove_workspace", { path }),
+  renameWorkspace: (path: string, name: string) => invoke<void>("rename_workspace", { path, name }),
   defaultWorkspace: () => invoke<string>("default_workspace"),
   connect: (url: string, token: string) => invoke<string>("connect_server", { url, token }),
   disconnect: () => invoke<void>("disconnect_server"),
