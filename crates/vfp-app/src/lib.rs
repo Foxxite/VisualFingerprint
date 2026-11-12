@@ -638,6 +638,22 @@ fn setup_ffmpeg() {
     }
 }
 
+/// On a computer the installer puts `ffmpeg` and `ffprobe` in a `ffmpeg` folder next to the app's
+/// resources. If they are there, use them. If not, the core falls back to PATH.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn setup_bundled_ffmpeg(app: &tauri::App) {
+    let Ok(res) = app.path().resource_dir() else { return };
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    for dir in [res.join("ffmpeg"), res.join("resources").join("ffmpeg")] {
+        let (ff, fp) = (dir.join(format!("ffmpeg{ext}")), dir.join(format!("ffprobe{ext}")));
+        if ff.exists() && fp.exists() {
+            std::env::set_var("VFP_FFMPEG", ff);
+            std::env::set_var("VFP_FFPROBE", fp);
+            return;
+        }
+    }
+}
+
 #[cfg_attr(any(target_os = "android", target_os = "ios"), tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "android")]
@@ -646,6 +662,11 @@ pub fn run() {
         .manage(Keys::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .setup(|_app| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            setup_bundled_ffmpeg(_app);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app_state,
             check_strength,

@@ -29,7 +29,39 @@ and start the server with `--trust-proxy`. See [SECURITY.md](SECURITY.md).
   or **zero-knowledge mode**, which sends no key and works over plain HTTP on a trusted network.
 - Tested: build, start, token output, volume survives restart, health `healthy`, zero-knowledge vault, receivers,
   asset and marking through the CLI, and the data folder holds no plain names.
-- Not tested: Protected mode behind a real HTTPS proxy, ARM images, audio/video jobs in the container.
+- Audio and video jobs in the container: tested (register, mark and trace of a wav and an mp4 through the CLI, with FFmpeg 5.1 in the image).
+- Not tested: Protected mode behind a real HTTPS proxy (Coolify, Caddy), ARM images.
+
+## Host it behind an HTTPS proxy (Coolify, Caddy, Traefik, nginx)
+
+Protected mode sends the data key with each request. The server accepts that key only over HTTPS.
+The server itself speaks plain HTTP, so an HTTPS proxy must sit in front of it and tell it so.
+
+1. Run the server with `VFP_TRUST_PROXY=true` (or `--trust-proxy`). The server then believes the
+   `X-Forwarded-Proto: https` header. **Only the proxy may reach the server port.** If anyone can reach
+   the port directly, they can send that header themselves. Do not publish port 8443 to the internet.
+2. Keep `/data` on a persistent volume and back it up. A lost `master.key` cannot be replaced.
+3. Read the first admin token from the logs (shown once). Make more with `vfp-server token new`.
+4. In the app or CLI, connect to the `https://` address of the proxy.
+
+### Coolify (with a domain on Cloudflare)
+
+- Add a new resource from this Git repository. Choose the **Dockerfile** build pack and set the
+  Dockerfile location to `deploy/Dockerfile`. Set the exposed port to `8443`.
+- Add a **persistent storage** mount with destination `/data`.
+- Environment variables: `VFP_TRUST_PROXY=true`, and if you like `VFP_MAX_UPLOAD_MB` and `VFP_JOBS`.
+- Set the domain (for example `https://vfp.example.com`). Coolify's proxy (Traefik) gets the certificate
+  and sends `X-Forwarded-Proto: https`.
+- Cloudflare: the orange-cloud proxy limits a request body to **100 MB on the Free and Pro plans**. A big video
+  upload fails above that. Use a grey-cloud (DNS only) record for this host, or keep files under the limit.
+  With the orange cloud, set SSL/TLS mode to **Full (strict)**.
+- Check `https://vfp.example.com/healthz`. It answers `ok`.
+
+### Other proxies
+
+Any proxy works if it ends TLS, sets `X-Forwarded-Proto: https`, and allows large request bodies
+(nginx: `client_max_body_size 4g;`) and long timeouts, because a video trace keeps the request open.
+For Caddy, `reverse_proxy vfp:8443` is enough: Caddy sets the header itself.
 
 ## Encryption (Protected mode)
 

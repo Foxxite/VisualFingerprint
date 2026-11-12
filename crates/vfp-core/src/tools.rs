@@ -16,12 +16,24 @@ fn program(var: &str, default: &str) -> OsString {
 
 /// A command that runs FFmpeg.
 pub fn ffmpeg() -> Command {
-    Command::new(program("VFP_FFMPEG", "ffmpeg"))
+    quiet(Command::new(program("VFP_FFMPEG", "ffmpeg")))
 }
 
 /// A command that runs FFprobe.
 pub fn ffprobe() -> Command {
-    Command::new(program("VFP_FFPROBE", "ffprobe"))
+    quiet(Command::new(program("VFP_FFPROBE", "ffprobe")))
+}
+
+/// On Windows, a program started from a window app would open a console window. This stops that.
+#[cfg(windows)]
+fn quiet(mut c: Command) -> Command {
+    use std::os::windows::process::CommandExt;
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    c
+}
+#[cfg(not(windows))]
+fn quiet(c: Command) -> Command {
+    c
 }
 
 /// The video encoder name. Default `libx264`. The Android build has no x264, so the app sets

@@ -132,6 +132,13 @@ Four tabs:
 
 ---
 
+## Run your own server
+
+A server keeps the key and the originals in one place, so a phone or laptop only sends the leaked file.
+See [docs/SERVER.md](docs/SERVER.md). It runs in Docker. For use over the internet, put it behind an HTTPS
+proxy and set `VFP_TRUST_PROXY=true`. That guide has the steps for Coolify, including a note for domains on
+Cloudflare (its proxy limits uploads to 100 MB on the free plan).
+
 ## Keep these safe
 
 | Item | Why |

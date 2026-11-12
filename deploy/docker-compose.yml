@@ -1,7 +1,7 @@
 # Start:   docker compose -f deploy/docker-compose.yml up -d
 # Token:   docker compose -f deploy/docker-compose.yml logs vfp   (first start prints the admin token once)
 # More:    docker compose -f deploy/docker-compose.yml exec vfp vfp-server token new --role trace --label phone
-# Put an HTTPS reverse proxy (Caddy, nginx, Traefik) in front for use over the internet.
+# Put an HTTPS reverse proxy (Coolify, Caddy, Traefik, nginx) in front. See docs/SERVER.md.
 services:
   vfp:
     build:
