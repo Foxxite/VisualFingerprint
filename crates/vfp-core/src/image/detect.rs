@@ -1,9 +1,10 @@
 //! Read symbols from a leaked image that is already aligned to the original.
 //!
-//! Alignment (crop, scale, rotation) is a separate step; it comes later with OpenCV.
+//! `detect_image` aligns first (see `register.rs`), then reads the symbols.
 
 use super::color::to_ycrcb;
 use super::common::{block_dct, layout, pad8, positions, strengths, ImageParams, NPOS};
+use super::register::register;
 use super::Bgr;
 
 pub struct ImageDetection {
@@ -93,4 +94,10 @@ pub fn detect_aligned(
         valid_fraction: bvalid.iter().filter(|&&b| b).count() as f64 / bvalid.len() as f64,
         z,
     }
+}
+
+/// Align the leak to the original, then read the symbols.
+pub fn detect_image(leaked: &Bgr, original: &Bgr, seed: u64, params: &ImageParams) -> (ImageDetection, super::register::Registration) {
+    let (aligned, valid, reg) = register(leaked, original);
+    (detect_aligned(&aligned, original, Some(&valid), seed, params), reg)
 }

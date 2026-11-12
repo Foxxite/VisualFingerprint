@@ -1,0 +1,195 @@
+//! Small image-math toolkit: 3x3 matrices, float planes, warping, blur, erode.
+//!
+//! A warp matrix `M` maps DESTINATION coordinates to SOURCE coordinates
+//! (the same meaning as OpenCV's `WARP_INVERSE_MAP`).
+
+pub type Mat3 = [[f64; 3]; 3];
+
+pub const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+pub fn mul(a: &Mat3, b: &Mat3) -> Mat3 {
+    let mut o = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            o[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    o
+}
+
+pub fn inv(m: &Mat3) -> Option<Mat3> {
+    let c = [
+        [m[1][1] * m[2][2] - m[1][2] * m[2][1], m[0][2] * m[2][1] - m[0][1] * m[2][2], m[0][1] * m[1][2] - m[0][2] * m[1][1]],
+        [m[1][2] * m[2][0] - m[1][0] * m[2][2], m[0][0] * m[2][2] - m[0][2] * m[2][0], m[0][2] * m[1][0] - m[0][0] * m[1][2]],
+        [m[1][0] * m[2][1] - m[1][1] * m[2][0], m[0][1] * m[2][0] - m[0][0] * m[2][1], m[0][0] * m[1][1] - m[0][1] * m[1][0]],
+    ];
+    let det = m[0][0] * c[0][0] + m[0][1] * c[1][0] + m[0][2] * c[2][0];
+    if det.abs() < 1e-18 || !det.is_finite() {
+        return None;
+    }
+    let mut o = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            o[i][j] = c[i][j] / det;
+        }
+    }
+    Some(o)
+}
+
+pub fn project(m: &Mat3, x: f64, y: f64) -> Option<(f64, f64)> {
+    let d = m[2][0] * x + m[2][1] * y + m[2][2];
+    if d.abs() < 1e-12 {
+        return None;
+    }
+    Some(((m[0][0] * x + m[0][1] * y + m[0][2]) / d, (m[1][0] * x + m[1][1] * y + m[1][2]) / d))
+}
+
+#[derive(Clone, Debug)]
+pub struct Plane {
+    pub h: usize,
+    pub w: usize,
+    pub d: Vec<f32>,
+}
+
+impl Plane {
+    pub fn new(h: usize, w: usize) -> Self {
+        Plane { h, w, d: vec![0.0; h * w] }
+    }
+    pub fn from_fn(h: usize, w: usize, f: impl Fn(usize, usize) -> f32) -> Self {
+        let mut d = Vec::with_capacity(h * w);
+        for y in 0..h {
+            for x in 0..w {
+                d.push(f(x, y));
+            }
+        }
+        Plane { h, w, d }
+    }
+    /// Pixel value, zero outside the plane.
+    pub fn at(&self, x: isize, y: isize) -> f32 {
+        if x < 0 || y < 0 || x >= self.w as isize || y >= self.h as isize {
+            0.0
+        } else {
+            self.d[y as usize * self.w + x as usize]
+        }
+    }
+    /// Pixel value with the edge pixel repeated outside.
+    pub fn clamped(&self, x: isize, y: isize) -> f32 {
+        self.d[y.clamp(0, self.h as isize - 1) as usize * self.w + x.clamp(0, self.w as isize - 1) as usize]
+    }
+}
+
+pub fn bilinear(p: &Plane, x: f64, y: f64) -> f32 {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = ((x - x0) as f32, (y - y0) as f32);
+    let (xi, yi) = (x0 as isize, y0 as isize);
+    let top = p.at(xi, yi) * (1.0 - fx) + p.at(xi + 1, yi) * fx;
+    let bot = p.at(xi, yi + 1) * (1.0 - fx) + p.at(xi + 1, yi + 1) * fx;
+    top * (1.0 - fy) + bot * fy
+}
+
+fn cubic_weights(t: f64) -> [f32; 4] {
+    const A: f64 = -0.75; // OpenCV's bicubic
+    let k = |x: f64| {
+        let x = x.abs();
+        if x <= 1.0 {
+            ((A + 2.0) * x - (A + 3.0)) * x * x + 1.0
+        } else if x < 2.0 {
+            ((A * x - 5.0 * A) * x + 8.0 * A) * x - 4.0 * A
+        } else {
+            0.0
+        }
+    };
+    [k(t + 1.0) as f32, k(t) as f32, k(1.0 - t) as f32, k(2.0 - t) as f32]
+}
+
+pub fn bicubic(p: &Plane, x: f64, y: f64) -> f32 {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (wx, wy) = (cubic_weights(x - x0), cubic_weights(y - y0));
+    let (xi, yi) = (x0 as isize, y0 as isize);
+    let mut s = 0.0;
+    for (j, wyj) in wy.iter().enumerate() {
+        let mut row = 0.0;
+        for (i, wxi) in wx.iter().enumerate() {
+            row += wxi * p.at(xi - 1 + i as isize, yi - 1 + j as isize);
+        }
+        s += wyj * row;
+    }
+    s
+}
+
+/// dst(x, y) = src(M (x, y)); pixels that map outside the source are 0.
+pub fn warp_plane(src: &Plane, m: &Mat3, dh: usize, dw: usize, cubic: bool) -> Plane {
+    let mut out = Plane::new(dh, dw);
+    for y in 0..dh {
+        for x in 0..dw {
+            if let Some((sx, sy)) = project(m, x as f64, y as f64) {
+                out.d[y * dw + x] = if cubic { bicubic(src, sx, sy) } else { bilinear(src, sx, sy) };
+            }
+        }
+    }
+    out
+}
+
+/// Which destination pixels land inside the source (nearest-neighbour rule).
+/// `src_mask` limits the source area; `None` means the whole source.
+pub fn warp_inside(sh: usize, sw: usize, src_mask: Option<&[bool]>, m: &Mat3, dh: usize, dw: usize) -> Vec<bool> {
+    let mut out = vec![false; dh * dw];
+    for y in 0..dh {
+        for x in 0..dw {
+            if let Some((sx, sy)) = project(m, x as f64, y as f64) {
+                let (ix, iy) = (sx.round(), sy.round());
+                if ix >= 0.0 && iy >= 0.0 && ix < sw as f64 && iy < sh as f64 {
+                    let idx = iy as usize * sw + ix as usize;
+                    out[y * dw + x] = src_mask.is_none_or(|m| m[idx]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Erode a bool mask with a k x k box. Outside the image counts as true (like OpenCV's default).
+pub fn erode(mask: &[bool], h: usize, w: usize, k: usize) -> Vec<bool> {
+    let r = (k / 2) as isize;
+    let pass = |src: &[bool], horizontal: bool| -> Vec<bool> {
+        let mut out = vec![true; h * w];
+        for y in 0..h {
+            for x in 0..w {
+                let mut ok = true;
+                for d in -r..=r {
+                    let (xx, yy) = if horizontal { (x as isize + d, y as isize) } else { (x as isize, y as isize + d) };
+                    if xx >= 0 && yy >= 0 && xx < w as isize && yy < h as isize && !src[yy as usize * w + xx as usize] {
+                        ok = false;
+                        break;
+                    }
+                }
+                out[y * w + x] = ok;
+            }
+        }
+        out
+    };
+    pass(&pass(mask, true), false)
+}
+
+/// Separable Gaussian blur with repeated edges.
+pub fn gaussian(p: &Plane, sigma: f64, radius: usize) -> Plane {
+    let k: Vec<f32> = {
+        let raw: Vec<f64> = (-(radius as isize)..=radius as isize).map(|i| (-((i * i) as f64) / (2.0 * sigma * sigma)).exp()).collect();
+        let s: f64 = raw.iter().sum();
+        raw.iter().map(|v| (v / s) as f32).collect()
+    };
+    let r = radius as isize;
+    let mut tmp = Plane::new(p.h, p.w);
+    for y in 0..p.h {
+        for x in 0..p.w {
+            tmp.d[y * p.w + x] = (-r..=r).map(|d| k[(d + r) as usize] * p.clamped(x as isize + d, y as isize)).sum();
+        }
+    }
+    let mut out = Plane::new(p.h, p.w);
+    for y in 0..p.h {
+        for x in 0..p.w {
+            out.d[y * p.w + x] = (-r..=r).map(|d| k[(d + r) as usize] * tmp.clamped(x as isize, y as isize + d)).sum();
+        }
+    }
+    out
+}

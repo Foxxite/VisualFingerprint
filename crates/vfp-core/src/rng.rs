@@ -157,6 +157,11 @@ impl Pcg64 {
         }
     }
 
+    /// Value in [0, max], public for samplers outside this module.
+    pub fn interval_pub(&mut self, max: u64) -> u64 {
+        self.interval(max)
+    }
+
     /// `rng.permutation(n)`.
     pub fn permutation(&mut self, n: usize) -> Vec<u64> {
         let mut a: Vec<u64> = (0..n as u64).collect();

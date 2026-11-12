@@ -4,6 +4,9 @@ pub mod color;
 pub mod common;
 pub mod detect;
 pub mod embed;
+pub mod features;
+pub mod register;
+pub mod warp;
 
 /// A BGR image, 8 bits per channel, interleaved (same layout as OpenCV).
 #[derive(Clone, Debug, PartialEq)]
