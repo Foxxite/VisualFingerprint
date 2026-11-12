@@ -1,7 +1,7 @@
 //! High-level actions: register a file, mark copies for receivers, trace a leak.
 //! The command line and the apps call these functions.
 //!
-//! Images and audio. Video returns a clear error until it is ported.
+//! Images, audio and video.
 
 use crate::audio::common::{auto_nslots as audio_auto_nslots, AudioParams};
 use crate::audio::ffio::probe_audio;
@@ -12,6 +12,10 @@ use crate::image::detect::detect_image;
 use crate::image::embed::embed_image;
 use crate::imgio::{read_image, sha256_file, write_image};
 use crate::tardos::{accusation_threshold, required_length, supported_colluders, TardosCode};
+use crate::video::common::{auto_nslots as video_auto_nslots, capacity as video_capacity, VideoParams};
+use crate::video::detect::detect_video;
+use crate::video::embed::embed_video;
+use crate::video::ffio::probe as probe_video;
 use crate::workspace::{Asset, Workspace};
 use serde::Serialize;
 use serde_json::json;
@@ -35,14 +39,6 @@ pub fn kind_of(path: &Path) -> Result<&'static str> {
         Ok("audio")
     } else {
         err(format!("unsupported file type: .{e}"))
-    }
-}
-
-fn need_supported(kind: &str) -> Result<()> {
-    if kind == "image" || kind == "audio" {
-        Ok(())
-    } else {
-        err(format!("{kind} files are not supported by the Rust core yet (images and audio only). Use the Python version."))
     }
 }
 
@@ -92,18 +88,19 @@ pub struct PlanOptions {
     pub strength: Option<f32>,
     pub slots: Option<usize>,
     pub n_colluders: u64,
+    /// Video only: x264 quality of the marked copies (higher = smaller file, lower fidelity).
+    pub crf: Option<i32>,
 }
 
 impl Default for PlanOptions {
     fn default() -> Self {
-        PlanOptions { max_receivers: 1000, eps: 1e-3, strength: None, slots: None, n_colluders: 3 }
+        PlanOptions { max_receivers: 1000, eps: 1e-3, strength: None, slots: None, n_colluders: 3, crf: None }
     }
 }
 
-/// Decide how the file will carry the code. `slots` means symbols per image.
+/// Decide how the file will carry the code. `slots` means symbols per image, or per segment for audio and video.
 pub fn plan_file(path: &Path, o: &PlanOptions) -> Result<Plan> {
     let kind = kind_of(path)?;
-    need_supported(kind)?;
     let mut notes = vec![];
     let target = required_length(o.max_receivers, o.n_colluders, o.eps) as usize;
     let (params, m) = if kind == "image" {
@@ -118,6 +115,25 @@ pub fn plan_file(path: &Path, o: &PlanOptions) -> Result<Plan> {
         }
         let strength = o.strength.unwrap_or(ImageParams::default().strength);
         (json!({"nslots": n, "strength": strength}), n)
+    } else if kind == "video" {
+        let mut p = VideoParams::default();
+        if let Some(s) = o.strength {
+            p.strength = s as f64;
+        }
+        if let Some(c) = o.crf {
+            p.crf = c;
+        }
+        let info = probe_video(path)?;
+        let n = o.slots.unwrap_or_else(|| video_auto_nslots(&info, &p, target));
+        p.nslots = n;
+        let m = video_capacity(&info, &p, None);
+        if n > VideoParams::default().nslots {
+            notes.push(format!(
+                "Short video: packing {n} symbols per segment ({:.0} per second) to reach {m} symbols.",
+                n as f64 / p.seg_seconds
+            ));
+        }
+        (serde_json::to_value(&p)?, m)
     } else {
         let mut p = AudioParams::default();
         if let Some(s) = o.strength {
@@ -145,6 +161,10 @@ pub fn plan_file(path: &Path, o: &PlanOptions) -> Result<Plan> {
         );
     }
     Ok(Plan { kind: kind.into(), m, params, guaranteed_colluders: g, notes })
+}
+
+fn video_params(a: &Asset) -> VideoParams {
+    serde_json::from_value(a.params.clone()).unwrap_or_default()
 }
 
 fn audio_params(a: &Asset) -> AudioParams {
@@ -176,8 +196,7 @@ fn code_for(ws: &Workspace, a: &Asset) -> TardosCode {
 }
 
 /// Write one marked copy for one receiver. Returns the output path.
-pub fn mark_for_receiver(ws: &Workspace, a: &Asset, receiver: &str, outdir: &Path) -> Result<PathBuf> {
-    need_supported(&a.kind)?;
+pub fn mark_for_receiver(ws: &Workspace, a: &Asset, receiver: &str, outdir: &Path, progress: Option<&dyn Fn(usize, usize)>) -> Result<PathBuf> {
     std::fs::create_dir_all(outdir)?;
     let rec = ws.receiver(receiver)?;
     let ui = ws.issue(a.id, rec.id, None)?;
@@ -190,6 +209,8 @@ pub fn mark_for_receiver(ws: &Workspace, a: &Asset, receiver: &str, outdir: &Pat
     if a.kind == "image" {
         let marked = embed_image(&read_image(&a.orig_path)?, &word, ws.layout_seed(a.id), &image_params(a))?;
         write_image(&out, &marked)?;
+    } else if a.kind == "video" {
+        embed_video(&a.orig_path, &out, &word, ws.layout_seed(a.id), &video_params(a), progress)?;
     } else {
         embed_audio(&a.orig_path, &out, &word, ws.layout_seed(a.id), &audio_params(a))?;
     }
@@ -256,7 +277,6 @@ pub fn trace_leak(ws: &Workspace, leaked: &Path, asset: Option<&str>) -> Result<
 }
 
 fn trace_one(ws: &Workspace, a: &Asset, leaked: &Path) -> Result<TraceResult> {
-    need_supported(&a.kind)?;
     let issued = ws.issues(a.id)?;
     if issued.is_empty() {
         return err(format!("asset '{}' has no issued copies", a.name));
@@ -270,6 +290,10 @@ fn trace_one(ws: &Workspace, a: &Asset, leaked: &Path) -> Result<TraceResult> {
         }
         let ev = json!({"alignment": reg.method, "overlap": r2(det.valid_fraction)});
         (det.bits, det.confidence, det.valid_fraction, ev)
+    } else if a.kind == "video" {
+        let det = detect_video(leaked, &a.orig_path, ws.layout_seed(a.id), &video_params(a), Some(a.m), None)?;
+        let ev = json!({"time_offset_frames": det.tau, "alignment": det.warp, "symbols_with_evidence": r2(det.coverage)});
+        (det.bits, det.confidence, det.coverage, ev)
     } else {
         let det = detect_audio(leaked, &a.orig_path, ws.layout_seed(a.id), &audio_params(a), a.m)?;
         if det.align < 0.5 {

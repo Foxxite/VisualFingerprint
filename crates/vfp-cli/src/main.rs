@@ -60,9 +60,12 @@ enum Cmd {
         /// Mark strength
         #[arg(long)]
         strength: Option<f32>,
-        /// Symbols per image
+        /// Symbols per image, or per segment for audio and video
         #[arg(long)]
         slots: Option<usize>,
+        /// Video only: x264 quality of marked copies (default 16; higher = smaller file)
+        #[arg(long)]
+        crf: Option<i32>,
     },
     /// Make marked copies for receivers
     Mark {
@@ -138,8 +141,8 @@ fn run(cli: Cli) -> Result<u8> {
                 }
             }
         }
-        Cmd::Asset { action, file, name, max_receivers, colluders, eps, strength, slots } => {
-            let opts = PlanOptions { max_receivers, eps, strength, slots, n_colluders: colluders };
+        Cmd::Asset { action, file, name, max_receivers, colluders, eps, strength, slots, crf } => {
+            let opts = PlanOptions { max_receivers, eps, strength, slots, n_colluders: colluders, crf };
             let need_file = || file.as_deref().ok_or_else(|| Error("asset add/plan needs a file".into()));
             match action {
                 AssetAction::Add => {
@@ -171,7 +174,12 @@ fn run(cli: Cli) -> Result<u8> {
             }
             for name in targets {
                 println!("marking for {name} ...");
-                let p = pipeline::mark_for_receiver(&ws, &a, &name, &out)?;
+                let show = |n: usize, total: usize| eprint!("\r  frame {n}/{total}");
+                let progress: Option<&dyn Fn(usize, usize)> = if a.kind == "video" { Some(&show) } else { None };
+                let p = pipeline::mark_for_receiver(&ws, &a, &name, &out, progress)?;
+                if a.kind == "video" {
+                    eprintln!();
+                }
                 println!("  -> {}", p.display());
             }
         }

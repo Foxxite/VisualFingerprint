@@ -2,6 +2,7 @@
 
 use crate::perceptual::block_mask;
 use crate::rng::Pcg64;
+use rayon::prelude::*;
 
 /// Mid/low DCT positions (u, v) inside an 8x8 block.
 pub fn positions() -> Vec<(usize, usize)> {
@@ -71,10 +72,11 @@ fn dct_matrix() -> [[f32; 8]; 8] {
 /// Orthonormal 8x8 DCT of every block. Output: nb blocks of 64 values (row-major, [u][v]).
 pub fn block_dct(plane: &[f32], ph: usize, pw: usize) -> Vec<[f32; 64]> {
     let d = dct_matrix();
-    let (nbh, nbw) = (ph / 8, pw / 8);
-    let mut out = Vec::with_capacity(nbh * nbw);
-    for by in 0..nbh {
-        for bx in 0..nbw {
+    let nbw = pw / 8;
+    (0..(ph / 8) * nbw)
+        .into_par_iter()
+        .map(|i| {
+            let (by, bx) = (i / nbw, i % nbw);
             let mut b = [[0f32; 8]; 8];
             for (r, row) in b.iter_mut().enumerate() {
                 for (c, v) in row.iter_mut().enumerate() {
@@ -93,28 +95,39 @@ pub fn block_dct(plane: &[f32], ph: usize, pw: usize) -> Vec<[f32; 64]> {
                     o[u * 8 + v] = (0..8).map(|c| t[u][c] * d[v][c]).sum();
                 }
             }
-            out.push(o);
-        }
-    }
-    out
+            o
+        })
+        .collect()
 }
 
 /// Inverse of `block_dct`. Returns the ph x pw plane.
 pub fn block_idct(coef: &[[f32; 64]], ph: usize, pw: usize) -> Vec<f32> {
     let d = dct_matrix();
     let nbw = pw / 8;
-    let mut out = vec![0f32; ph * pw];
-    for (i, o) in coef.iter().enumerate() {
-        let (by, bx) = (i / nbw, i % nbw);
-        let mut t = [[0f32; 8]; 8]; // t = D^T * O
-        for r in 0..8 {
-            for v in 0..8 {
-                t[r][v] = (0..8).map(|u| d[u][r] * o[u * 8 + v]).sum();
+    let blocks: Vec<[f32; 64]> = coef
+        .par_iter()
+        .map(|o| {
+            let mut t = [[0f32; 8]; 8]; // t = D^T * O
+            for r in 0..8 {
+                for v in 0..8 {
+                    t[r][v] = (0..8).map(|u| d[u][r] * o[u * 8 + v]).sum();
+                }
             }
-        }
+            let mut out = [0f32; 64];
+            for r in 0..8 {
+                for c in 0..8 {
+                    out[r * 8 + c] = (0..8).map(|v| t[r][v] * d[v][c]).sum();
+                }
+            }
+            out
+        })
+        .collect();
+    let mut out = vec![0f32; ph * pw];
+    for (i, blk) in blocks.iter().enumerate() {
+        let (by, bx) = (i / nbw, i % nbw);
         for r in 0..8 {
             for c in 0..8 {
-                out[(by * 8 + r) * pw + bx * 8 + c] = (0..8).map(|v| t[r][v] * d[v][c]).sum();
+                out[(by * 8 + r) * pw + bx * 8 + c] = blk[r * 8 + c];
             }
         }
     }
@@ -123,8 +136,15 @@ pub fn block_idct(coef: &[[f32; 64]], ph: usize, pw: usize) -> Vec<f32> {
 
 /// Keyed block -> slot map and keyed +-1 pattern (nb x NPOS, row-major).
 pub fn layout(nbh: usize, nbw: usize, seed: u64, nslots: usize) -> (Vec<u32>, Vec<f32>) {
+    layout_parts(nbh, nbw, &[seed], nslots)
+}
+
+/// Same, with the seed given as several integers (video uses `(seed, 0x7E6, segment)`).
+pub fn layout_parts(nbh: usize, nbw: usize, parts: &[u64], nslots: usize) -> (Vec<u32>, Vec<f32>) {
     let nb = nbh * nbw;
-    let mut rng = Pcg64::from_seed(&[seed, 0x1A6E]);
+    let mut key = parts.to_vec();
+    key.push(0x1A6E);
+    let mut rng = Pcg64::from_seed(&key);
     let slot = rng.permutation(nb).into_iter().map(|p| (p % nslots as u64) as u32).collect();
     let pat = rng.signs_pm1(nb * NPOS);
     (slot, pat)

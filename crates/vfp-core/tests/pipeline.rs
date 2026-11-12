@@ -62,7 +62,7 @@ fn register_mark_trace() {
     let out = root.join("out");
     let mut files = vec![];
     for n in ["alice", "bob", "carol"] {
-        files.push(mark_for_receiver(&ws, &asset, n, &out).unwrap());
+        files.push(mark_for_receiver(&ws, &asset, n, &out, None).unwrap());
     }
     assert!(files[2].ends_with("pic__carol.png"));
     // asking again gives the same code index (idempotent)
@@ -94,8 +94,8 @@ fn register_mark_trace() {
 fn unmarked_original_accuses_nobody() {
     let (root, ws, src) = setup("clean");
     let (asset, _) = add_asset(&ws, &src, None, &opts()).unwrap();
-    mark_for_receiver(&ws, &asset, "alice", &root.join("out")).unwrap();
-    mark_for_receiver(&ws, &asset, "bob", &root.join("out")).unwrap();
+    mark_for_receiver(&ws, &asset, "alice", &root.join("out"), None).unwrap();
+    mark_for_receiver(&ws, &asset, "bob", &root.join("out"), None).unwrap();
     let r = trace_leak(&ws, &src, None).unwrap();
     assert!(r.flagged.is_empty(), "the original must not accuse anyone: {r:?}");
     assert!(r.verdict.starts_with("INCONCLUSIVE"));
@@ -131,10 +131,10 @@ fn names_and_kinds() {
 }
 
 #[test]
-fn video_and_audio_say_not_yet() {
+fn broken_media_gives_a_clear_error() {
     let root = temp("video");
     let f = root.join("clip.mp4");
     std::fs::write(&f, b"not really a video").unwrap();
     let e = vfp_core::pipeline::plan_file(&f, &PlanOptions::default()).unwrap_err();
-    assert!(e.to_string().contains("not supported by the Rust core yet"), "{e}");
+    assert!(e.to_string().contains("cannot read video") || e.to_string().contains("cannot run ffprobe"), "{e}");
 }

@@ -266,6 +266,11 @@ fn warp_err(lg: &Plane, og: &Plane, m: &Mat3, stride: usize) -> f64 {
 }
 
 pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
+    estimate_warp_gray(&gray_plane(leaked), &gray_plane(original))
+}
+
+/// Same, on single (luma) planes. Video uses this for frames.
+pub fn estimate_warp_gray(lg: &Plane, og: &Plane) -> Registration {
     let t0 = std::time::Instant::now();
     let trace = std::env::var_os("VFP_TRACE").is_some();
     let lap = |what: &str| {
@@ -273,7 +278,6 @@ pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
             eprintln!("    [register] {what}: {:.2}s", t0.elapsed().as_secs_f64())
         }
     };
-    let (lg, og) = (gray_plane(leaked), gray_plane(original));
     let (h, w) = (og.h, og.w);
     let id_err = (lg.h == og.h && lg.w == og.w)
         .then(|| lg.d.iter().zip(&og.d).map(|(a, b)| (a - b).abs() as f64).sum::<f64>() / (h * w) as f64);
@@ -284,7 +288,7 @@ pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
     }
 
     // The coarse stage runs on reduced copies (<= COARSE_PX). A 12 MP photo would be too slow otherwise.
-    let ((lgs, al), (ogs, ao)) = (downscale(&lg, COARSE_PX), downscale(&og, COARSE_PX));
+    let ((lgs, al), (ogs, ao)) = (downscale(lg, COARSE_PX), downscale(og, COARSE_PX));
     let reduced = lgs.d.len() != lg.d.len() || ogs.d.len() != og.d.len();
 
     // coarse: feature matches + RANSAC (leaked -> original)
@@ -305,7 +309,7 @@ pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
         }
         let (sx, sy) = (lg.w as f64 / w as f64, lg.h as f64 / h as f64);
         let m = [[sx, 0.0, 0.5 * sx - 0.5], [0.0, sy, 0.5 * sy - 0.5], [0.0, 0.0, 1.0]];
-        let err = warp_err(&lg, &og, &m, stride_for(h * w));
+        let err = warp_err(lg, og, &m, stride_for(h * w));
         return Registration { m: Some(m), method: "resize-fallback", err, inliers: 0 };
     };
     lap("match+ransac");
@@ -326,14 +330,14 @@ pub fn estimate_warp(leaked: &Bgr, original: &Bgr) -> Registration {
         if let Some(ail) = inv(&al) {
             m = normalised(&mul(&ail, &mul(&m, &ao)));
         }
-        if let Some(cand) = ecc_homography(&og, &lg, &m, FINE_ITERS, 1e-6, stride) {
-            if warp_err(&lg, &og, &cand, stride) < warp_err(&lg, &og, &m, stride) {
+        if let Some(cand) = ecc_homography(og, lg, &m, FINE_ITERS, 1e-6, stride) {
+            if warp_err(lg, og, &cand, stride) < warp_err(lg, og, &m, stride) {
                 m = cand;
             }
         }
         lap("ecc (full size)");
     }
-    let err = warp_err(&lg, &og, &m, stride);
+    let err = warp_err(lg, og, &m, stride);
     if let Some(e) = id_err {
         if err >= 0.8 * e {
             return Registration { m: None, method: "identity", err: e, inliers: inl };
@@ -357,6 +361,19 @@ pub fn apply_warp(leaked: &Bgr, m: Option<&Mat3>, h: usize, w: usize) -> (Bgr, V
     }
     let inside = warp_inside(leaked.h, leaked.w, None, m, h, w);
     (Bgr { h, w, data }, erode(&inside, h, w, 5))
+}
+
+/// Warp one luma plane into the original grid (values rounded to whole numbers like an 8-bit image).
+pub fn apply_warp_plane(leaked: &Plane, m: Option<&Mat3>, h: usize, w: usize) -> (Plane, Vec<bool>) {
+    let Some(m) = m else {
+        return (leaked.clone(), vec![true; h * w]);
+    };
+    let mut warped = warp_plane(leaked, m, h, w, true);
+    for v in warped.d.iter_mut() {
+        *v = v.round().clamp(0.0, 255.0);
+    }
+    let inside = warp_inside(leaked.h, leaked.w, None, m, h, w);
+    (warped, erode(&inside, h, w, 5))
 }
 
 /// Returns (aligned image, valid mask, registration info).

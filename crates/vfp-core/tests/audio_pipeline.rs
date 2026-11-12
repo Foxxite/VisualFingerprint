@@ -65,7 +65,7 @@ fn mark_reencode_trace() {
     assert!(plan.notes.iter().any(|n| n.starts_with("Short audio")), "{:?}", plan.notes);
 
     let out = root.join("out");
-    let copies: Vec<PathBuf> = ["alice", "bob", "carol"].iter().map(|n| mark_for_receiver(&ws, &asset, n, &out).unwrap()).collect();
+    let copies: Vec<PathBuf> = ["alice", "bob", "carol"].iter().map(|n| mark_for_receiver(&ws, &asset, n, &out, None).unwrap()).collect();
     assert!(copies[0].ends_with("tune__alice.wav"));
 
     // the marked file is the same length and stays close to the original
@@ -110,8 +110,8 @@ fn speed_change_accuses_nobody() {
     let src = root.join("tune.wav");
     make_source(&src);
     let (asset, _) = add_asset(&ws, &src, Some("tune"), &PlanOptions { max_receivers: 20, ..Default::default() }).unwrap();
-    let a = mark_for_receiver(&ws, &asset, "alice", &root.join("out")).unwrap();
-    mark_for_receiver(&ws, &asset, "bob", &root.join("out")).unwrap();
+    let a = mark_for_receiver(&ws, &asset, "alice", &root.join("out"), None).unwrap();
+    mark_for_receiver(&ws, &asset, "bob", &root.join("out"), None).unwrap();
     let fast = root.join("fast.wav");
     ffmpeg(&["-i", a.to_str().unwrap(), "-af", "atempo=1.03", fast.to_str().unwrap()]);
     let r = trace_leak(&ws, &fast, None).unwrap();

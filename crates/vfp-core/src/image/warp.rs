@@ -207,3 +207,66 @@ pub fn downscale(p: &Plane, max_px: usize) -> (Plane, Mat3) {
     let small = Plane::from_fn(nh, nw, |x, y| bilinear(&b, (x as f64 + 0.5) * fx - 0.5, (y as f64 + 0.5) * fy - 0.5));
     (small, [[1.0 / fx, 0.0, 0.5 / fx - 0.5], [0.0, 1.0 / fy, 0.5 / fy - 0.5], [0.0, 0.0, 1.0]])
 }
+
+/// Shrink with area averaging (like OpenCV `INTER_AREA`), 8-bit in and out.
+pub fn resize_area_u8(src: &[u8], sh: usize, sw: usize, dh: usize, dw: usize) -> Vec<u8> {
+    // weights of each destination pixel over the source pixels it covers
+    let axis = |sn: usize, dn: usize| -> Vec<Vec<(usize, f32)>> {
+        let scale = sn as f64 / dn as f64;
+        (0..dn)
+            .map(|i| {
+                let (a, b) = (i as f64 * scale, (i + 1) as f64 * scale);
+                let (k0, k1) = (a.floor() as usize, (b.ceil() as usize).min(sn));
+                let mut w: Vec<(usize, f32)> =
+                    (k0..k1).map(|k| (k, ((b.min((k + 1) as f64)) - a.max(k as f64)).max(0.0) as f32)).collect();
+                let tot: f32 = w.iter().map(|x| x.1).sum();
+                for x in w.iter_mut() {
+                    x.1 /= tot;
+                }
+                w
+            })
+            .collect()
+    };
+    let (wx, wy) = (axis(sw, dw), axis(sh, dh));
+    // horizontal pass
+    let mut tmp = vec![0f32; sh * dw];
+    for y in 0..sh {
+        for (x, ws) in wx.iter().enumerate() {
+            tmp[y * dw + x] = ws.iter().map(|&(k, w)| src[y * sw + k] as f32 * w).sum();
+        }
+    }
+    let mut out = vec![0u8; dh * dw];
+    for (y, ws) in wy.iter().enumerate() {
+        for x in 0..dw {
+            let v: f32 = ws.iter().map(|&(k, w)| tmp[k * dw + x] * w).sum();
+            out[y * dw + x] = v.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// Bicubic resize of a float plane with repeated edges (like OpenCV `INTER_CUBIC`).
+pub fn resize_cubic(src: &[f32], sh: usize, sw: usize, dh: usize, dw: usize) -> Vec<f32> {
+    let (sx, sy) = (sw as f64 / dw as f64, sh as f64 / dh as f64);
+    let mut out = vec![0f32; dh * dw];
+    for y in 0..dh {
+        let fy = (y as f64 + 0.5) * sy - 0.5;
+        let (y0, wy) = (fy.floor(), cubic_weights(fy - fy.floor()));
+        for x in 0..dw {
+            let fx = (x as f64 + 0.5) * sx - 0.5;
+            let (x0, wx) = (fx.floor(), cubic_weights(fx - fx.floor()));
+            let mut s = 0f32;
+            for (j, wyj) in wy.iter().enumerate() {
+                let yy = (y0 as isize - 1 + j as isize).clamp(0, sh as isize - 1) as usize;
+                let mut row = 0f32;
+                for (i, wxi) in wx.iter().enumerate() {
+                    let xx = (x0 as isize - 1 + i as isize).clamp(0, sw as isize - 1) as usize;
+                    row += wxi * src[yy * sw + xx];
+                }
+                s += wyj * row;
+            }
+            out[y * dw + x] = s;
+        }
+    }
+    out
+}

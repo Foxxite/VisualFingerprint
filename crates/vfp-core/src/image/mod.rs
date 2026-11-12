@@ -5,6 +5,7 @@ pub mod common;
 pub mod detect;
 pub mod embed;
 pub mod features;
+pub mod plane;
 pub mod register;
 pub mod warp;
 

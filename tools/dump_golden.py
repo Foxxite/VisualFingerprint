@@ -92,6 +92,73 @@ def audio_golden() -> dict:
     }
 
 
+def video_golden() -> dict:
+    from fractions import Fraction
+
+    import cv2
+
+    from vfp.image.plane import block_valid, embed_plane, make_layout, plane_stats
+    from vfp.video.common import (VideoParams, auto_nslots, canon_size, capacity, effective_strength,
+                                  seg_frames, segment_seed)
+    from vfp.video.ffio import VideoInfo
+    from vfp.video.sync import find_offsets
+
+    out: dict = {}
+    sizes = [(1920, 1080), (1280, 720), (640, 360), (3840, 2160), (240, 240), (1300, 720)]
+    p = VideoParams()
+    out["canon"] = [{"w": w, "h": h, "canon": list(canon_size(w, h)), "strength": effective_strength(w, h, p)}
+                    for w, h in sizes]
+
+    def info(n, fps, w=1280, h=720):
+        return VideoInfo("x", w, h, Fraction(fps), n, n / float(Fraction(fps)), False, None, {})
+
+    out["capacity"] = []
+    for n, fps in ((150, "30"), (600, "30000/1001"), (125, "25"), (3, "24")):
+        i = info(n, fps)
+        out["capacity"].append({
+            "nframes": n, "fps": fps, "seg_frames": seg_frames(i, p), "cap": capacity(i, p),
+            "auto": auto_nslots(i, p, 2455), "cap_max": capacity(i, p, 2.0)})
+
+    # layout with the 3-part segment seed, and embed / detect statistics on a small plane
+    seed = 2**61 + 11
+    slot, pat = make_layout(40, 56, segment_seed(seed, 3), 8)
+    out["layout"] = {"h": 40, "w": 56, "seed": str(seed), "seg": 3, "nslots": 8,
+                     "slot": slot.tolist(), "pat_first": pat[:3].tolist(), "pat_sha": h_(pat)}
+    yy, xx = np.mgrid[0:40, 0:56]
+    y0 = ((xx * 9 + yy * 5 + ((xx * yy) % 29) * 6) % 200 + 20).astype(np.float32)
+    sym = np.array([1, -1, 1, 1, -1, -1, 1, -1], np.float32)
+    marked = embed_plane(y0, sym, slot, pat, 2.1)
+    out["embed_plane"] = {"y": y0.reshape(-1).tolist(), "marked": marked.reshape(-1).tolist()}
+    leak = np.clip(np.rint(marked * 0.9 + 6.0), 0, 255).astype(np.float32)
+    valid = np.ones((40, 56), bool)
+    valid[:, 50:] = False
+    bv = block_valid(valid)
+    num, den, sig = plane_stats(y0, leak, bv, slot, pat, 2.1, 8)
+    out["plane_stats"] = {"leak": leak.reshape(-1).tolist(), "bvalid": bv.tolist(), "num": num.tolist(),
+                          "den": den.tolist(), "sigma": float(sig)}
+
+    # time-offset search on synthetic thumbnails
+    nf, tau_true = 160, 17
+    sig_o = np.stack([hash_noise(576, 1000 + k) for k in range(nf)]).astype(np.float32)
+    sig_l = np.stack([sig_o[k + tau_true] + 0.2 * hash_noise(576, 90000 + k) for k in range(100)]).astype(np.float32)
+    out["offsets"] = {"nf": nf, "tau_true": tau_true,
+                      "same_fps": find_offsets(sig_o, 30.0, sig_l, 30.0),
+                      "half_fps": find_offsets(sig_o, 30.0, sig_l[::2].copy(), 15.0)}
+
+    # the two resizers
+    pl = ((np.arange(36)[:, None] * 7 + np.arange(48)[None, :] * 3 + (np.arange(36)[:, None] * np.arange(48)[None, :]) % 23 * 5) % 256).astype(np.uint8)
+    out["resize"] = {
+        "src": pl.reshape(-1).tolist(),
+        "area": cv2.resize(pl, (30, 23), interpolation=cv2.INTER_AREA).reshape(-1).tolist(),
+        "cubic": cv2.resize((pl[:23, :30].astype(np.float32) - 100) / 7.0, (48, 36), interpolation=cv2.INTER_CUBIC).reshape(-1).tolist(),
+    }
+    return out
+
+
+def h_(a: np.ndarray) -> str:
+    return h(a)
+
+
 def main() -> None:
     g: dict = {"master_key_hex": MASTER.hex()}
 
@@ -173,6 +240,7 @@ def main() -> None:
     }
 
     g["audio"] = audio_golden()
+    g["video"] = video_golden()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(g, indent=1))
