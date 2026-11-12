@@ -3,7 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 export type Mode = "none" | "local" | "server";
-export interface AppState { mode: Mode; place: string; server_url: string | null; home: string }
+export interface AppState {
+  mode: Mode; place: string; server_url: string | null; home: string;
+  encrypted: boolean; locked: boolean; needs_vault: boolean;
+}
+export interface Strength { bits: number; ok: boolean; advice: string[] }
 export interface Receiver { id: number; name: string; note: string }
 export interface Asset { id: number; name: string; kind: string; m: number; max_receivers: number; copies: number }
 export interface Plan { kind: string; m: number; guaranteed_colluders: number; notes: string[] }
@@ -14,7 +18,14 @@ export interface TraceResult {
 
 export const api = {
   state: () => invoke<AppState>("app_state"),
-  setupLocal: (folder: string | null) => invoke<string>("setup_local", { folder }),
+  setupLocal: (folder: string | null, passphrase: string | null) => invoke<string>("setup_local", { folder, passphrase }),
+  strength: (passphrase: string) => invoke<Strength>("check_strength", { passphrase }),
+  generatePassphrase: () => invoke<string>("generate_passphrase"),
+  unlock: (passphrase: string) => invoke<void>("unlock", { passphrase }),
+  lock: () => invoke<void>("lock"),
+  createServerVault: (passphrase: string) => invoke<void>("create_server_vault", { passphrase }),
+  changePassphrase: (old: string, nw: string) => invoke<void>("change_passphrase", { old, new: nw }),
+  encryptWorkspace: (passphrase: string) => invoke<string>("encrypt_workspace", { passphrase }),
   defaultWorkspace: () => invoke<string>("default_workspace"),
   connect: (url: string, token: string) => invoke<string>("connect_server", { url, token }),
   disconnect: () => invoke<void>("disconnect_server"),

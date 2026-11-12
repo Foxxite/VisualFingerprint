@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { api, errText, pickFolder, pickSave } from "./api";
+import Passphrase from "./Passphrase";
 
 export default function Setup({ onDone }: { onDone: () => void }) {
-  const [step, setStep] = useState<"choose" | "folder" | "server" | "backup">("choose");
+  const [step, setStep] = useState<"choose" | "folder" | "protect" | "server" | "backup">("choose");
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [msg, setMsg] = useState("");
@@ -19,13 +20,17 @@ export default function Setup({ onDone }: { onDone: () => void }) {
     const f = await pickFolder("Where should your originals and key be stored?");
     if (f) setFolder(f);
   };
-  const local = async () => {
+  const [pass, setPass] = useState<string | null>(null);
+  const local = async (passphrase: string | null) => {
+    setBusy(true);
+    setMsg("");
     try {
-      await api.setupLocal(folder || null);
+      await api.setupLocal(folder || null, passphrase);
       setStep("backup");
     } catch (x) {
       setMsg(errText(x));
     }
+    setBusy(false);
   };
   const connect = async () => {
     setBusy(true);
@@ -39,7 +44,7 @@ export default function Setup({ onDone }: { onDone: () => void }) {
     setBusy(false);
   };
   const backup = async () => {
-    const dest = await pickSave("Save a backup of your key", "vfp-master.key");
+    const dest = await pickSave("Save a backup of your key file", "vfp-key-backup");
     if (!dest) return;
     try {
       await api.exportKey(dest);
@@ -82,13 +87,44 @@ export default function Setup({ onDone }: { onDone: () => void }) {
               <button className="secondary" onClick={browse}>
                 Choose a folder…
               </button>
-              <button className="primary" onClick={local}>
+              <button className="primary" onClick={() => setStep("protect")}>
                 Use this folder
               </button>
               <button className="secondary" onClick={() => setStep("choose")}>
                 Back
               </button>
             </div>
+          </div>
+        )}
+
+        {step === "protect" && (
+          <div className="card">
+            <h2>Protect your files with a passphrase</h2>
+            <p>
+              Your originals, your secret key and your receiver names are encrypted on this device. You need the passphrase to open
+              them.
+            </p>
+            <Passphrase onValid={setPass} />
+            <div className="row" style={{ marginTop: 14 }}>
+              <button className="primary" disabled={!pass || busy} onClick={() => local(pass)}>
+                {busy ? "Working…" : "Encrypt and continue"}
+              </button>
+              <button className="secondary" onClick={() => setStep("folder")}>
+                Back
+              </button>
+            </div>
+            <p className="muted">
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (window.confirm("Without a passphrase, anyone who can read this folder can read your originals. Continue without encryption?")) local(null);
+                }}
+              >
+                Continue without encryption
+              </a>{" "}
+              (not for sensitive files)
+            </p>
           </div>
         )}
 
@@ -112,9 +148,10 @@ export default function Setup({ onDone }: { onDone: () => void }) {
 
         {step === "backup" && (
           <div className="card">
-            <h2>Back up your secret key</h2>
+            <h2>Back up your key file</h2>
             <p>
-              Your key is the only way to find out who leaked a file. If you lose it, you cannot trace a leak. Do not share it.
+              This file is the only way to find out who leaked a file. If you lose it, you cannot trace a leak. Do not share it.
+              If your workspace is encrypted, it also needs your passphrase.
             </p>
             <div className="row">
               <button className="primary" onClick={backup}>

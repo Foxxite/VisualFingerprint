@@ -48,7 +48,7 @@ start-gui.bat                              # desktop app (Windows)
 Command-line walk-through:
 
 ```bash
-vfp init
+vfp init                 # asks for a passphrase (encrypted). --plain skips it
 vfp receivers add alice bob carol
 vfp asset plan  "film.mp4"                 # shows symbols, density, guaranteed group size
 vfp asset add   "film.mp4" --name film

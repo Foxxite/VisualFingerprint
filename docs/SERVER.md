@@ -16,8 +16,31 @@ docker compose -f deploy/docker-compose.yml logs vfp      # first start prints t
 ```
 
 Or without Docker: `cargo run --release -p vfp-server -- --data ./data serve`.
-The server speaks plain HTTP. For the internet, put an HTTPS proxy (Caddy, nginx, Traefik) in front.
-**Back up the data folder (volume).** Without `master.key` nobody can trace a leak.
+The server speaks plain HTTP. For the internet, put an HTTPS proxy (Caddy, nginx, Traefik) in front,
+and start the server with `--trust-proxy`. See [SECURITY.md](SECURITY.md).
+**Back up the data folder (volume).** Without the key nobody can trace a leak.
+
+## Encryption (Protected mode)
+
+A new server is **uninitialized**. It refuses data until an admin creates a vault:
+
+```bash
+vfp connect https://vfp.example.com --token vfp_...
+vfp vault init            # asks for a strong passphrase. The server never sees it.
+```
+
+After that the server stores originals, `master.key`, receiver and asset names, and marked copies **encrypted**.
+Each device unlocks with the passphrase and sends the derived data key with every request
+(header `X-VFP-Key`). The server uses it in memory, and never writes it to disk.
+
+- The server **refuses the key header on plain HTTP**. It accepts it only from a trusted HTTPS proxy
+  (`--trust-proxy` with `X-Forwarded-Proto: https`), or from the same machine (loopback, for tests).
+- The client refuses to send the key to a non-loopback `http://` address.
+- Without the key the server answers `423 locked`. With a wrong key it answers `403`.
+- `--plain` starts a fresh server with no encryption. Use it only for tests.
+- `vfp-server --data ./data migrate` encrypts an existing plain data folder
+  (passphrase from `VFP_PASSPHRASE_FILE` or stdin).
+- A lost passphrase cannot be recovered.
 
 ## Tokens
 
@@ -48,7 +71,7 @@ You can also use `--server URL --token T` or the variables `VFP_SERVER` and `VFP
 
 - `--max-upload-mb` (default 4096): bigger uploads are refused.
 - `--jobs` (default 2): heavy jobs that run at the same time. Other requests wait.
-- `audit.log` in the data folder: time, token label, action (trace, mark, download, add).
+- `audit.log` in the data folder: time, token label, action (trace, mark, download, add), ids and counts only. No names.
 - Uploaded files are deleted when the request ends.
 - `<home>/server.json` on a device holds the token in clear text. Keep that folder private.
 
@@ -57,6 +80,7 @@ You can also use `--server URL --token T` or the variables `VFP_SERVER` and `VFP
 | Call | Role | Body |
 |---|---|---|
 | `GET /info` | any | |
+| `GET /vault`, `POST /vault` | any / admin | `vault.json` (public-safe). `POST` also needs the key header. |
 | `GET /receivers`, `POST /receivers` | any / admin | `{"name","note"}` |
 | `GET /assets`, `POST /assets?filename=..&name=..&max_receivers=..` | any / admin | file bytes |
 | `POST /mark` | admin | `{"asset","receivers":[..]}` |
