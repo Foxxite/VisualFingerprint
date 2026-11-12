@@ -15,3 +15,6 @@ opt-level = 3
 # Crypto (Argon2, ChaCha) is far too slow unoptimised. Optimise dependencies even in debug builds.
 [profile.dev.package."*"]
 opt-level = 3
+# Build scripts stay unoptimised (as before). They are compiled and run on every build.
+[profile.dev.build-override]
+opt-level = 0
