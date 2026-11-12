@@ -14,7 +14,8 @@ The Python code in `src/vfp/` stays the **reference**. The Rust code must give t
 | `vfp` command line | done: `init`, `receivers`, `asset`, `mark`, `trace` (no `gui`) |
 | `Backend` trait (`LocalBackend`, `RemoteBackend`) | done, see `docs/SERVER.md` |
 | `vfp-server` (axum, tokens, Docker files) | done and tested; Docker image not built yet |
-| Apps (Tauri, Android) | not started |
+| Desktop app (Tauri 2 + React, `crates/vfp-app`) | built and starts; screens not yet tested by hand |
+| Android app | not started |
 
 ## Build and run
 
@@ -31,6 +32,17 @@ target/release/vfp trace "leaked.mp4"
 ```
 
 The commands and the output match the Python `vfp` command.
+
+## Desktop app
+
+```bash
+npm --prefix crates/vfp-app/frontend ci
+npm --prefix crates/vfp-app/frontend run build
+cargo build -p vfp-app          # or: cargo run -p vfp-app
+```
+
+The app has two modes: "This device only" and "Connect to my server". Plain `cargo test` skips the app.
+On Linux the app needs the WebKitGTK libraries.
 
 ## Layout
 
@@ -103,11 +115,11 @@ The 240x240 clip and an 8 s 4K excerpt also trace (untouched, CRF 30, scale, tri
 - The video's sound track is copied unchanged (as in Python).
 - Audio output formats: wav, flac, mp3, m4a, ogg. Audio is held in memory.
 - Not built or tested yet on macOS, Linux or Android. The CI workflow `rust.yml` will show the first result.
-- No GUI yet.
+- The desktop app has no cancel button yet and no installer. Installers need `cargo install tauri-cli`.
 
 ## Next steps
 
 1. Build and test the Docker image. Job ids with progress for long traces.
-2. Tauri desktop app.
+2. Test the desktop app by hand. Add installers with FFmpeg bundled, and a cancel button.
 3. Android: images first; audio and video need a decoder that does not use the `ffmpeg` program.
 4. Choose a licence (x264 and FFmpeg builds may decide it).

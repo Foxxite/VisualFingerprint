@@ -267,6 +267,7 @@ src/vfp/
   gui/            desktop app (PySide6)
   eval/           attack suites, quality metrics, collusion trials
 tests/
+docs/             HANDOFF.md (project state, decisions, next steps) and experiments/ (research scripts)
 test-media/       sample files used in the evaluations (not in git: put your own media here)
 samples/          marked files for A/B checks (not in git: made locally)
 ```

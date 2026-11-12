@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VisualFingerprint",
+  "version": "0.2.0",
+  "identifier": "org.visualfingerprint.app",
+  "build": {
+    "frontendDist": "./frontend/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix frontend run dev",
+    "beforeBuildCommand": "npm --prefix frontend ci && npm --prefix frontend run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      { "title": "VisualFingerprint", "width": 980, "height": 720, "minWidth": 720, "minHeight": 520, "dragDropEnabled": true }
+    ],
+    "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/icon.ico"]
+  }
+}

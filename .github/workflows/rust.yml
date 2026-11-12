@@ -35,7 +35,7 @@ jobs:
 
       # test-media/ is not in the repository, so the real-photo test skips itself here.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test
 
       - name: Build the command line
         run: cargo build --release -p vfp-cli
