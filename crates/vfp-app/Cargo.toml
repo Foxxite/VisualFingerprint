@@ -13,3 +13,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+# Load the built UI from frontend/dist instead of the dev server. `cargo tauri build` turns this on by itself.
+# For a plain cargo build use: cargo build -p vfp-app --features custom-protocol
+custom-protocol = ["tauri/custom-protocol"]

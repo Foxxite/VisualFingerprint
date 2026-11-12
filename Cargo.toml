@@ -11,3 +11,7 @@ edition = "2021"
 # Registration is heavy; keep tests fast.
 [profile.test]
 opt-level = 3
+
+# Crypto (Argon2, ChaCha) is far too slow unoptimised. Optimise dependencies even in debug builds.
+[profile.dev.package."*"]
+opt-level = 3
