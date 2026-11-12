@@ -12,7 +12,9 @@ pub mod keys;
 pub mod perceptual;
 pub mod pipeline;
 pub mod rng;
+pub mod strength;
 pub mod tardos;
+pub mod vault;
 pub mod video;
 pub mod workspace;
 

@@ -18,6 +18,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 realfft = "3"
 rayon = "1"
 ureq = { version = "2", optional = true, features = ["json"] }
+argon2 = "0.5"
+hkdf = "0.12"
+zeroize = { version = "1", features = ["derive"] }
+zxcvbn = "3"
+eff-wordlist = "1.0.3"
+chacha20poly1305 = { version = "0.10", features = ["stream"] }
 
 [features]
 default = []
