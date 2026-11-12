@@ -110,12 +110,22 @@ pub use remote::RemoteBackend;
 mod remote {
     use super::*;
     use crate::error::Error;
+    use crate::vault::{Dek, VaultFile};
     use std::time::Duration;
 
     pub struct RemoteBackend {
         base: String,
         token: String,
         agent: ureq::Agent,
+        key: Option<Dek>,
+    }
+
+    /// True for http://localhost, 127.0.0.1 and [::1].
+    fn is_loopback_url(url: &str) -> bool {
+        let rest = url.split("://").nth(1).unwrap_or("");
+        let host = rest.split('/').next().unwrap_or("");
+        let host = if let Some(h) = host.strip_prefix('[') { h.split(']').next().unwrap_or("") } else { host.rsplit_once(':').map(|x| x.0).unwrap_or(host) };
+        host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
     #[derive(Deserialize)]
@@ -136,6 +146,8 @@ mod remote {
                 let msg = serde_json::from_str::<serde_json::Value>(&body).ok().and_then(|v| v["error"].as_str().map(String::from));
                 match (code, msg) {
                     (401, _) => Error("the server refused the token (wrong, revoked, or missing)".into()),
+                    (423, Some(m)) => Error(m),
+                    (403, Some(m)) if m.contains("key") => Error(m),
                     (403, _) => Error("this token is not allowed to do that (it may be a trace-only token)".into()),
                     (_, Some(m)) => Error(m),
                     (c, None) => Error(format!("server error {c}")),
@@ -151,11 +163,39 @@ mod remote {
                 .timeout_connect(Duration::from_secs(15))
                 .timeout_read(Duration::from_secs(3 * 3600)) // a long video can take a while
                 .build();
-            RemoteBackend { base: url.trim_end_matches('/').to_string(), token: token.to_string(), agent }
+            RemoteBackend { base: url.trim_end_matches('/').to_string(), token: token.to_string(), agent, key: None }
+        }
+
+        /// Send this key with every data request. The key is never sent over plain HTTP to another machine.
+        pub fn with_key(mut self, key: Option<Dek>) -> Result<Self> {
+            if key.is_some() && !self.base.starts_with("https://") && !is_loopback_url(&self.base) {
+                return Err(Error("refusing to send the key over plain HTTP. Use an https:// address.".into()));
+            }
+            self.key = key;
+            Ok(self)
         }
 
         fn req(&self, method: &str, path: &str) -> ureq::Request {
-            self.agent.request(method, &format!("{}{}", self.base, path)).set("Authorization", &format!("Bearer {}", self.token))
+            let r = self.agent.request(method, &format!("{}{}", self.base, path)).set("Authorization", &format!("Bearer {}", self.token));
+            match &self.key {
+                Some(k) => r.set("X-VFP-Key", &k.to_hex()),
+                None => r,
+            }
+        }
+
+        /// The server's `vault.json`, if it has one. A new device unlocks it with the passphrase.
+        pub fn vault(&self) -> Result<Option<VaultFile>> {
+            match self.req("GET", "/v1/vault").call() {
+                Ok(r) => Ok(Some(serde_json::from_reader(r.into_reader())?)),
+                Err(ureq::Error::Status(404, _)) => Ok(None),
+                Err(e) => Err(fail(e)),
+            }
+        }
+
+        /// Create the vault on a fresh server (admin token). Needs [`RemoteBackend::with_key`] with the new key.
+        pub fn create_vault(&self, v: &VaultFile) -> Result<()> {
+            self.req("POST", "/v1/vault").send_json(serde_json::to_value(v)?).map_err(fail)?;
+            Ok(())
         }
 
         fn json<T: serde::de::DeserializeOwned>(&self, r: ureq::Request) -> Result<T> {

@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 vfp-core = { path = "../vfp-core" }
 axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "signal", "sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
 clap = { version = "4", features = ["derive", "env"] }

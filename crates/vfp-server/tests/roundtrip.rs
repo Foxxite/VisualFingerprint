@@ -27,9 +27,14 @@ fn free_port() -> u16 {
 }
 
 fn start(data: &Path, max_mb: u64) -> Server {
+    start_with(data, max_mb, &["--plain"])
+}
+
+fn start_with(data: &Path, max_mb: u64, extra: &[&str]) -> Server {
     let port = free_port();
     let mut child = Command::new(BIN)
         .args(["--data", data.to_str().unwrap(), "serve", "--bind", &format!("127.0.0.1:{port}"), "--max-upload-mb", &max_mb.to_string()])
+        .args(extra)
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -126,6 +131,123 @@ fn second_device_traces_without_original() {
     let log = std::fs::read_to_string(srv.data.join("audit.log")).unwrap();
     assert!(log.contains("phone") && log.contains("trace"), "{log}");
     assert_eq!(std::fs::read_dir(srv.data.join("uploads")).unwrap().count(), 0);
+    drop(srv);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ---------------------------------------------------------------- encrypted (Protected) server
+const PASS: &str = "gnarly pelican tuxedo mulch yoyo cabbage lunar";
+
+fn all_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() { all_files(&p, out) } else { out.push(p) }
+    }
+}
+
+fn has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// One raw HTTP request. Returns the status code.
+fn raw_status(port: &str, token: &str, extra_headers: &str) -> u16 {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(port).unwrap();
+    write!(s, "GET /v1/receivers HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n{extra_headers}Connection: close\r\n\r\n").unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).unwrap();
+    buf.split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+#[test]
+fn protected_server_keeps_nothing_readable() {
+    use vfp_core::vault::{KdfParams, Protection, VaultFile};
+    let tmp = std::env::temp_dir().join(format!("vfp_enc_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let (data, dev) = (tmp.join("data"), tmp.join("dev"));
+    std::fs::create_dir_all(&dev).unwrap();
+    let srv = start_with(&data, 8, &[]);
+
+    // fresh server: no vault yet
+    let anon = RemoteBackend::new(&srv.url, &srv.admin);
+    assert_eq!(anon.info().unwrap()["protection"], "uninitialized");
+    assert!(anon.receivers().unwrap_err().0.contains("no vault"));
+    assert!(anon.vault().unwrap().is_none());
+
+    // the client makes the key and creates the vault
+    let (vf, dek) = VaultFile::create(PASS, Protection::Protected, KdfParams::TEST).unwrap();
+    let a = RemoteBackend::new(&srv.url, &srv.admin).with_key(Some(dek.clone())).unwrap();
+    a.create_vault(&vf).unwrap();
+    assert!(a.create_vault(&vf).is_err(), "a second vault must be refused");
+    assert_eq!(a.info().unwrap()["protection"], "protected");
+
+    a.add_receiver("Zelda Fitzgerald", "note-for-zelda").unwrap();
+    a.add_receiver("bob", "").unwrap();
+    let photo = dev.join("TopSecretPhoto.png");
+    make_photo(&photo);
+    a.add_asset(&photo, Some("Secret Plan"), &PlanOptions { max_receivers: 10, ..Default::default() }).unwrap();
+    let copies = a.mark("Secret Plan", &["Zelda Fitzgerald".into(), "bob".into()], &dev.join("out"), None).unwrap();
+    assert_eq!(copies.len(), 2);
+    let zelda = &copies[0].1;
+    assert!(zelda.exists() && std::fs::metadata(zelda).unwrap().len() > 1000);
+
+    // no key, wrong key
+    let nokey = RemoteBackend::new(&srv.url, &srv.admin);
+    assert!(nokey.receivers().unwrap_err().0.contains("locked"));
+    let (_, other) = VaultFile::create("another sturdy pelican garden mulch xylophone", Protection::Protected, KdfParams::TEST).unwrap();
+    let wrong = RemoteBackend::new(&srv.url, &srv.admin).with_key(Some(other)).unwrap();
+    assert!(wrong.receivers().unwrap_err().0.contains("key"));
+
+    // a second device: trace token, gets vault.json, unlocks with the passphrase, traces
+    let tok = token_cmd(&data, &["new", "--role", "trace", "--label", "phone"]).lines().find(|l| l.trim().starts_with("vfp_")).unwrap().trim().to_string();
+    let b0 = RemoteBackend::new(&srv.url, &tok);
+    let dek_b = b0.vault().unwrap().unwrap().unlock(PASS).unwrap();
+    assert!(b0.vault().unwrap().unwrap().unlock("not the passphrase at all").is_err());
+    let b = RemoteBackend::new(&srv.url, &tok).with_key(Some(dek_b)).unwrap();
+    let r = b.trace(zelda, None).unwrap();
+    assert_eq!(r.ranking[0].0, "Zelda Fitzgerald", "{:?}", r.ranking);
+    assert!(r.ranking[0].1 > r.threshold);
+
+    // the key is never sent over plain HTTP to another machine
+    assert!(RemoteBackend::new("http://example.com", "t").with_key(Some(dek.clone())).is_err());
+
+    // nothing readable in the data folder, audit log has no names, temp folders are empty
+    let photo_bytes = std::fs::read(&photo).unwrap();
+    let mid = &photo_bytes[photo_bytes.len() / 2..photo_bytes.len() / 2 + 64];
+    let mut files = vec![];
+    all_files(&data, &mut files);
+    assert!(!files.iter().any(|f| f.file_name().unwrap() == "master.key"));
+    for f in &files {
+        let bytes = std::fs::read(f).unwrap();
+        for s in ["Zelda", "note-for-zelda", "Secret Plan", "TopSecretPhoto"] {
+            assert!(!has(&bytes, s.as_bytes()), "{s} found in {}", f.display());
+        }
+        assert!(!has(&bytes, mid), "original bytes found in {}", f.display());
+        let name = f.file_name().unwrap().to_string_lossy().to_string();
+        assert!(!name.contains("Zelda") && !name.contains("zelda") && !name.contains("Secret"), "{name}");
+    }
+    for d in ["uploads", "tmp"] {
+        assert_eq!(std::fs::read_dir(srv.data.join(d)).unwrap().count(), 0, "{d} must be empty");
+    }
+    drop(srv);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn key_header_needs_https_behind_a_proxy() {
+    use vfp_core::vault::{KdfParams, Protection, VaultFile};
+    let tmp = std::env::temp_dir().join(format!("vfp_proxy_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let srv = start_with(&tmp.join("data"), 8, &["--trust-proxy"]);
+    let host = srv.url.trim_start_matches("http://").to_string();
+    let (_, dek) = VaultFile::create(PASS, Protection::Protected, KdfParams::TEST).unwrap();
+    let key = format!("X-VFP-Key: {}\r\n", dek.to_hex());
+    // behind a trusted proxy, a key without "X-Forwarded-Proto: https" is refused
+    assert_eq!(raw_status(&host, &srv.admin, &key), 400);
+    // with the header the request is accepted (and the fresh server answers "no vault yet": 503)
+    assert_eq!(raw_status(&host, &srv.admin, &format!("{key}X-Forwarded-Proto: https\r\n")), 503);
+    // no key header: nothing to protect
+    assert_eq!(raw_status(&host, &srv.admin, ""), 503);
     drop(srv);
     let _ = std::fs::remove_dir_all(&tmp);
 }
