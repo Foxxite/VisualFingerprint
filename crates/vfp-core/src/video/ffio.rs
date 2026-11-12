@@ -5,7 +5,7 @@
 use crate::error::{err, Error, Result};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 #[derive(Debug, Clone)]
 pub struct VideoInfo {
@@ -53,11 +53,11 @@ fn parse_fraction(s: &str) -> Option<(u64, u64)> {
 }
 
 fn tool_missing(tool: &str, e: std::io::Error) -> Error {
-    Error(format!("cannot run {tool}: {e}. Install FFmpeg and put it on PATH."))
+    Error(format!("cannot run {tool}: {e}. Install FFmpeg and put it on PATH (or set VFP_FFMPEG and VFP_FFPROBE)."))
 }
 
 pub fn probe(path: &Path) -> Result<VideoInfo> {
-    let out = Command::new("ffprobe")
+    let out = crate::tools::ffprobe()
         .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
         .arg(path)
         .output()
@@ -152,7 +152,7 @@ impl Drop for FrameReader {
 /// Decode frames as yuv420p. `start_seconds` seeks; `max_frames` stops early.
 pub fn decode_yuv(info: &VideoInfo, max_seconds: Option<f64>, start_seconds: f64, max_frames: Option<usize>) -> Result<FrameReader> {
     let (w, h) = (info.width, info.height);
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = crate::tools::ffmpeg();
     cmd.args(["-v", "error"]);
     if start_seconds > 0.0 {
         cmd.args(["-ss", &format!("{start_seconds:.6}")]);
@@ -173,7 +173,7 @@ pub fn decode_yuv(info: &VideoInfo, max_seconds: Option<f64>, start_seconds: f64
 /// All frames as small gray thumbnails: `n` rows of `tw*th` values. For time sync.
 pub fn decode_thumbs(info: &VideoInfo, size: (usize, usize)) -> Result<Vec<Vec<f32>>> {
     let (tw, th) = size;
-    let out = Command::new("ffmpeg")
+    let out = crate::tools::ffmpeg()
         .args(["-v", "error", "-i"])
         .arg(&info.path)
         .args(["-an", "-vf", &format!("scale={tw}:{th}:flags=area"), "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
@@ -193,13 +193,20 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn new(dst: &Path, info: &VideoInfo, crf: i32, preset: &str, audio_from: Option<&Path>, max_seconds: Option<f64>) -> Result<Self> {
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = crate::tools::ffmpeg();
         cmd.args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", &format!("{}x{}", info.width, info.height), "-r", &info.fps_arg(), "-i", "-"]);
         let use_audio = audio_from.is_some() && info.has_audio;
         if use_audio {
             cmd.arg("-i").arg(audio_from.unwrap()).args(["-map", "0:v", "-map", "1:a:0"]);
         }
-        cmd.args(["-c:v", "libx264", "-crf", &crf.to_string(), "-preset", preset, "-pix_fmt", "yuv420p"]);
+        let venc = crate::tools::video_encoder();
+        if venc == "libx264" {
+            cmd.args(["-c:v", "libx264", "-crf", &crf.to_string(), "-preset", preset, "-pix_fmt", "yuv420p"]);
+        } else {
+            // No x264 (for example on Android). Map crf 16 to about q 3 for mpeg4 (lower q is better quality).
+            let q = ((crf as f32) / 5.0).round().clamp(1.0, 31.0) as i32;
+            cmd.args(["-c:v", venc.as_str(), "-q:v", &q.to_string(), "-pix_fmt", "yuv420p"]);
+        }
         for (k, v) in &info.color {
             cmd.arg(format!("-{k}")).arg(v);
         }

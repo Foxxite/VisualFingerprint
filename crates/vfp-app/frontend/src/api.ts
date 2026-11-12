@@ -44,6 +44,7 @@ export const api = {
     invoke<[Asset, Plan]>("add_asset", { path, name, maxReceivers }),
   makeCopies: (asset: string, receivers: string[], outdir: string) =>
     invoke<[string, string][]>("make_copies", { asset, receivers, outdir }),
+  displayName: (path: string) => invoke<string>("display_name", { path }),
   copyOut: (src: string, dest: string) => invoke<void>("copy_out", { src, dest }),
   trace: (path: string, asset: string | null) => invoke<TraceResult>("trace_file", { path, asset }),
   saveReport: (result: TraceResult, leaked: string, dest: string) =>

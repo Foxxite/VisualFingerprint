@@ -21,3 +21,6 @@ test-media/
 # Rust
 target/
 crates/vfp-app/gen/android/.kotlin/
+
+# Fetched by scripts/fetch-android-ffmpeg.sh (large binaries)
+crates/vfp-app/android-ffmpeg/

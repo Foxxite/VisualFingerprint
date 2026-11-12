@@ -57,6 +57,12 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    // FFmpeg programs ship as lib*.so files (see scripts/fetch-android-ffmpeg.sh). Android only lets
+    // an app run programs from its native library folder, and only if the libraries are extracted.
+    packaging {
+        jniLibs.useLegacyPackaging = true
+    }
+    sourceSets.getByName("main").jniLibs.srcDir("../../../android-ffmpeg")
 }
 
 kotlin {

@@ -5,7 +5,7 @@
 use crate::error::{err, Error, Result};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[derive(Debug, Clone)]
 pub struct AudioInfo {
@@ -15,11 +15,11 @@ pub struct AudioInfo {
 }
 
 fn tool_missing(tool: &str, e: std::io::Error) -> Error {
-    Error(format!("cannot run {tool}: {e}. Install FFmpeg and put it on PATH."))
+    Error(format!("cannot run {tool}: {e}. Install FFmpeg and put it on PATH (or set VFP_FFMPEG and VFP_FFPROBE)."))
 }
 
 pub fn probe_audio(path: &Path) -> Result<AudioInfo> {
-    let out = Command::new("ffprobe")
+    let out = crate::tools::ffprobe()
         .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels,duration:format=duration", "-of", "json"])
         .arg(path)
         .output()
@@ -44,7 +44,7 @@ pub fn decode_audio(path: &Path, sr: Option<u32>, channels: Option<usize>) -> Re
         Some(c) => c,
         None => probe_audio(path)?.channels,
     };
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = crate::tools::ffmpeg();
     cmd.args(["-v", "error", "-i"]).arg(path).args(["-vn", "-ac", &ch.to_string()]);
     if let Some(sr) = sr {
         cmd.args(["-ar", &sr.to_string()]);
@@ -77,7 +77,7 @@ fn encoder_args(ext: &str) -> Result<&'static [&'static str]> {
 pub fn encode_audio(x: &[Vec<f32>], sr: u32, dst: &Path) -> Result<()> {
     let ext = dst.extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default();
     let codec = encoder_args(&ext)?;
-    let mut child = Command::new("ffmpeg")
+    let mut child = crate::tools::ffmpeg()
         .args(["-y", "-v", "error", "-f", "f32le", "-ar", &sr.to_string(), "-ac", &x.len().to_string(), "-i", "-"])
         .args(codec)
         .arg(dst)

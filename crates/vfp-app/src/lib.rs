@@ -94,9 +94,27 @@ fn stage_in(app: &AppHandle, p: &str) -> Res<PathBuf> {
     let mut out = std::fs::File::create(&tmp).map_err(e)?;
     std::io::copy(&mut src, &mut out).map_err(e)?;
     drop(out);
-    let fin = dir.join(format!("picked.{}", sniff_ext(&tmp)));
+    // Keep the real file name (so the asset gets a sensible name). Add the extension if it is missing.
+    let real = shown_name(app, p);
+    let stem = Path::new(&real).file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string();
+    let stem = if stem.is_empty() { "picked".to_string() } else { stem };
+    let ext = Path::new(&real).extension().and_then(|x| x.to_str()).map(|x| x.to_lowercase()).unwrap_or_else(|| sniff_ext(&tmp).to_string());
+    let fin = dir.join(format!("{stem}.{ext}"));
     std::fs::rename(&tmp, &fin).map_err(e)?;
     Ok(fin)
+}
+
+/// The name to show for a picked file. For a `content://` address, ask Android. Never contains a folder part.
+fn shown_name(app: &AppHandle, p: &str) -> String {
+    let n = app.path().file_name(p).unwrap_or_default();
+    let n: String = n.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c }).collect();
+    let n = n.trim().trim_matches('.').to_string();
+    if n.is_empty() { Path::new(p).file_name().and_then(|x| x.to_str()).unwrap_or("file").to_string() } else { n }
+}
+
+#[tauri::command]
+fn display_name(app: AppHandle, path: String) -> String {
+    shown_name(&app, &path)
 }
 
 /// Copy a finished file to where the user saved it (a path or a `content://` address).
@@ -599,8 +617,31 @@ fn save_report(app: AppHandle, result: TraceResult, leaked: String, dest: String
     r
 }
 
+/// On Android the FFmpeg programs ship as `libffmpeg.so` and `libffprobe.so` in the app's native
+/// library folder. That folder is the one place the app may run programs from. Find it from the
+/// path of our own library, then tell the core. The phone has no x264, so video uses mpeg4.
+#[cfg(target_os = "android")]
+fn setup_ffmpeg() {
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else { return };
+    let dir = maps
+        .lines()
+        .filter_map(|l| l.split_whitespace().last())
+        .find(|p| p.ends_with("/libvfp_app_lib.so"))
+        .and_then(|p| Path::new(p).parent().map(|d| d.to_path_buf()));
+    if let Some(dir) = dir {
+        let (ff, fp) = (dir.join("libffmpeg.so"), dir.join("libffprobe.so"));
+        if ff.exists() && fp.exists() {
+            std::env::set_var("VFP_FFMPEG", ff);
+            std::env::set_var("VFP_FFPROBE", fp);
+            std::env::set_var("VFP_VIDEO_ENCODER", "mpeg4");
+        }
+    }
+}
+
 #[cfg_attr(any(target_os = "android", target_os = "ios"), tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "android")]
+    setup_ffmpeg();
     tauri::Builder::default()
         .manage(Keys::default())
         .plugin(tauri_plugin_dialog::init())
@@ -625,6 +666,7 @@ pub fn run() {
             disconnect_server,
             export_key,
             copy_out,
+            display_name,
             receivers,
             add_receivers,
             assets,

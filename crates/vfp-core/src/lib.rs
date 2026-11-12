@@ -15,6 +15,7 @@ pub mod rng;
 pub mod securetemp;
 pub mod strength;
 pub mod tardos;
+pub mod tools;
 pub mod vault;
 pub mod video;
 pub mod workspace;

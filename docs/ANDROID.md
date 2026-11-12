@@ -49,14 +49,19 @@ cargo tauri android build --apk         # release APK (needs a signing key)
 
 ## Known gaps (do these before you trust it)
 
-- **Audio and video do not work yet.** The core calls the `ffmpeg` and `ffprobe` programs. A phone has neither.
-  Images work. Audio/video on Android needs a bundled FFmpeg library or the platform codecs (`MediaCodec`).
-  Until then, the Android app should be used with a server (`Make copies` for video runs on the server in Protected mode).
+- **Audio and video (works, video tested on the phone).** The core runs the `ffmpeg` and `ffprobe` programs.
+  The APK carries them as `libffmpeg.so` and `libffprobe.so` (arm64). Android only lets an app run programs from
+  its native library folder, so Gradle uses `useLegacyPackaging = true` to extract them. Run
+  `scripts/fetch-android-ffmpeg.sh` before the build. It downloads FFmpeg 9.0 from
+  hzw1199/Android-FFmpeg-Prebuilt and checks the SHA256. The files are not in git. They add about 31 MB to the APK.
+  That build is LGPL-2.1 and has no x264. So on Android the video copies use the built-in `mpeg4` encoder
+  (`VFP_VIDEO_ENCODER=mpeg4`, set by the app). A test copy made this way was traced to the right receiver.
+  Audio on the phone is not tested yet. Keep the LGPL notice and a source offer when you ship the APK.
 - **File picker and save dialog (fixed, tested on the phone).** Android returns `content://` addresses, not
   paths. The Rust side (`tauri-plugin-fs`) opens them: a picked file is copied into app cache with its real
   extension (found from the first bytes) and used from there. Results are written to the chosen address.
   There is no folder picker on Android, so "Make copies" saves the copies in app storage and then opens one
-  save dialog per copy. A registered original is named `picked`, because the address has no real file name.
+  save dialog per copy. The app shows the real file name (read with `display_name`), and a registered original keeps it.
 - **Memory.** The cache for zero-knowledge mode is on app storage. Set `VFP_CACHE_MB` low (or add a setting) on phones.
 - **Passphrase on phone.** Hand typing 8 words is slow. Paste from a password manager must work: test it.
 - Multiple workspaces use folders inside app storage on Android; "Browse…" for a folder may not work.

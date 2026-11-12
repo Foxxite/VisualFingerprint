@@ -6,7 +6,7 @@ export default function MakeCopies() {
   const [receivers, setReceivers] = useState<Receiver[]>([]);
   const [asset, setAsset] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [newFile, setNewFile] = useState<{ path: string; plan: Plan } | null>(null);
+  const [newFile, setNewFile] = useState<{ path: string; name: string; plan: Plan } | null>(null);
   const [maxR, setMaxR] = useState(1000);
   const [prog, setProg] = useState<[number, number] | null>(null);
   const [done, setDone] = useState<[string, string][]>([]);
@@ -33,7 +33,7 @@ export default function MakeCopies() {
   const preview = async (path: string, n: number) => {
     setMsg("");
     try {
-      setNewFile({ path, plan: await api.preview(path, n) });
+      setNewFile({ path, name: await api.displayName(path), plan: await api.preview(path, n) });
     } catch (x) {
       setMsg(errText(x));
       setNewFile(null);
@@ -118,7 +118,13 @@ export default function MakeCopies() {
         </div>
         {newFile && (
           <div style={{ marginTop: 12 }}>
-            <code>{newFile.path}</code>
+            <strong>{newFile.name}</strong>
+            {!newFile.path.startsWith("content://") && (
+              <>
+                <br />
+                <code>{newFile.path}</code>
+              </>
+            )}
             <p>
               This {newFile.plan.kind} can carry <strong>{newFile.plan.m}</strong> symbols.{" "}
               {newFile.plan.guaranteed_colluders > 0 ? (

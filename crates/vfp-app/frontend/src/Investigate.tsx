@@ -4,6 +4,7 @@ import { api, Asset, errText, pickFile, pickSave, TraceResult } from "./api";
 
 export default function Investigate() {
   const [file, setFile] = useState<string | null>(null);
+  const [fileName, setFileName] = useState("");
   const [assets, setAssets] = useState<Asset[]>([]);
   const [asset, setAsset] = useState("");
   const [res, setRes] = useState<TraceResult | null>(null);
@@ -26,6 +27,7 @@ export default function Investigate() {
         const path = p.paths[0];
         if (path && !busyRef.current) {
           setFile(path);
+          setFileName("");
           setRes(null);
         }
       }
@@ -39,6 +41,7 @@ export default function Investigate() {
     const p = await pickFile("Choose the leaked file");
     if (p) {
       setFile(p);
+      setFileName(await api.displayName(p));
       setRes(null);
     }
   };
@@ -72,9 +75,13 @@ export default function Investigate() {
       <div className={"drop" + (over ? " over" : "")}>
         {file ? (
           <>
-            <strong>{file.split(/[\\/]/).pop()}</strong>
-            <br />
-            <code>{file}</code>
+            <strong>{fileName || file.split(/[\\/]/).pop()}</strong>
+            {!file.startsWith("content://") && (
+              <>
+                <br />
+                <code>{file}</code>
+              </>
+            )}
           </>
         ) : (
           "Drop the leaked file here"
