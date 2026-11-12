@@ -30,7 +30,13 @@ def detect_audio(leaked: str, original: str, seed: int, p: AudioParams = AudioPa
     sr = io.sr
     xo = decode_audio(original, channels=1)[0]
     yl = decode_audio(leaked, sr=sr, channels=1)[0]
-    m = m or capacity(io.duration, p)
+    return detect_arrays(xo, yl, sr, io.duration, seed, p, m)
+
+
+def detect_arrays(xo: np.ndarray, yl: np.ndarray, sr: int, duration: float, seed: int,
+                  p: AudioParams = AudioParams(), m: int | None = None) -> AudioDetection:
+    """Same as `detect_audio`, on mono arrays already at the same sample rate."""
+    m = m or capacity(duration, p)
 
     off, score = find_offset(xo, yl, sr)
     h = hop(p)

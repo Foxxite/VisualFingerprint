@@ -3,6 +3,7 @@
 //! Every random stream here must match NumPy's `default_rng` bit for bit.
 //! The golden tests in `tests/golden.rs` check this against `tests/golden/golden.json`.
 
+pub mod audio;
 pub mod error;
 pub mod image;
 pub mod imgio;

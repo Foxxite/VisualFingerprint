@@ -1,8 +1,11 @@
 //! High-level actions: register a file, mark copies for receivers, trace a leak.
 //! The command line and the apps call these functions.
 //!
-//! Images only for now. Audio and video return a clear error until they are ported.
+//! Images and audio. Video returns a clear error until it is ported.
 
+use crate::audio::common::{auto_nslots as audio_auto_nslots, AudioParams};
+use crate::audio::ffio::probe_audio;
+use crate::audio::{detect_audio, embed_audio};
 use crate::error::{err, Result};
 use crate::image::common::{usable_slots, ImageParams, DEFAULT_SLOTS};
 use crate::image::detect::detect_image;
@@ -35,11 +38,11 @@ pub fn kind_of(path: &Path) -> Result<&'static str> {
     }
 }
 
-fn need_image(kind: &str) -> Result<()> {
-    if kind == "image" {
+fn need_supported(kind: &str) -> Result<()> {
+    if kind == "image" || kind == "audio" {
         Ok(())
     } else {
-        err(format!("{kind} files are not supported by the Rust core yet (images only). Use the Python version."))
+        err(format!("{kind} files are not supported by the Rust core yet (images and audio only). Use the Python version."))
     }
 }
 
@@ -100,20 +103,39 @@ impl Default for PlanOptions {
 /// Decide how the file will carry the code. `slots` means symbols per image.
 pub fn plan_file(path: &Path, o: &PlanOptions) -> Result<Plan> {
     let kind = kind_of(path)?;
-    need_image(kind)?;
+    need_supported(kind)?;
     let mut notes = vec![];
     let target = required_length(o.max_receivers, o.n_colluders, o.eps) as usize;
-    let img = read_image(path)?;
-    let want = o.slots.unwrap_or(DEFAULT_SLOTS.max(target));
-    let n = usable_slots(img.h, img.w, want);
-    if n < want {
-        notes.push(format!(
-            "Image ({}x{}) holds {} symbols (wanted {}). {}",
-            img.w, img.h, n, want, if n < target { "Tracing is weaker." } else { "" }
-        ));
-    }
-    let strength = o.strength.unwrap_or(ImageParams::default().strength);
-    let g = supported_colluders(n as u64, o.max_receivers, o.eps);
+    let (params, m) = if kind == "image" {
+        let img = read_image(path)?;
+        let want = o.slots.unwrap_or(DEFAULT_SLOTS.max(target));
+        let n = usable_slots(img.h, img.w, want);
+        if n < want {
+            notes.push(format!(
+                "Image ({}x{}) holds {} symbols (wanted {}). {}",
+                img.w, img.h, n, want, if n < target { "Tracing is weaker." } else { "" }
+            ));
+        }
+        let strength = o.strength.unwrap_or(ImageParams::default().strength);
+        (json!({"nslots": n, "strength": strength}), n)
+    } else {
+        let mut p = AudioParams::default();
+        if let Some(s) = o.strength {
+            p.alpha = s as f64;
+        }
+        let dur = probe_audio(path)?.duration;
+        let n = o.slots.unwrap_or_else(|| audio_auto_nslots(dur, &p, target));
+        p.nslots = n;
+        let m = p.capacity(dur);
+        if n > AudioParams::default().nslots {
+            notes.push(format!(
+                "Short audio: packing {n} symbols per segment ({:.0} per second) to reach {m} symbols.",
+                n as f64 / p.seg_seconds
+            ));
+        }
+        (serde_json::to_value(&p)?, m)
+    };
+    let g = supported_colluders(m as u64, o.max_receivers, o.eps);
     if g == 0 {
         notes.push(
             "Enough for one leaker. The theory does not guarantee tracing a group of colluders with this many \
@@ -122,7 +144,11 @@ pub fn plan_file(path: &Path, o: &PlanOptions) -> Result<Plan> {
                 .into(),
         );
     }
-    Ok(Plan { kind: kind.into(), m: n, params: json!({"nslots": n, "strength": strength}), guaranteed_colluders: g, notes })
+    Ok(Plan { kind: kind.into(), m, params, guaranteed_colluders: g, notes })
+}
+
+fn audio_params(a: &Asset) -> AudioParams {
+    serde_json::from_value(a.params.clone()).unwrap_or_default()
 }
 
 fn image_params(a: &Asset) -> ImageParams {
@@ -151,18 +177,22 @@ fn code_for(ws: &Workspace, a: &Asset) -> TardosCode {
 
 /// Write one marked copy for one receiver. Returns the output path.
 pub fn mark_for_receiver(ws: &Workspace, a: &Asset, receiver: &str, outdir: &Path) -> Result<PathBuf> {
-    need_image(&a.kind)?;
+    need_supported(&a.kind)?;
     std::fs::create_dir_all(outdir)?;
     let rec = ws.receiver(receiver)?;
     let ui = ws.issue(a.id, rec.id, None)?;
     let word = code_for(ws, a).codeword(ui);
     let mut ext = ext_of(&a.orig_path);
-    if ext == "webp" {
+    if a.kind == "image" && ext == "webp" {
         ext = "png".into(); // keep the copy lossless
     }
     let out = outdir.join(format!("{}__{}.{}", safe_name(stem(&a.name)), safe_name(&rec.name), ext));
-    let marked = embed_image(&read_image(&a.orig_path)?, &word, ws.layout_seed(a.id), &image_params(a))?;
-    write_image(&out, &marked)?;
+    if a.kind == "image" {
+        let marked = embed_image(&read_image(&a.orig_path)?, &word, ws.layout_seed(a.id), &image_params(a))?;
+        write_image(&out, &marked)?;
+    } else {
+        embed_audio(&a.orig_path, &out, &word, ws.layout_seed(a.id), &audio_params(a))?;
+    }
     ws.issue(a.id, rec.id, Some(&out))?;
     Ok(out)
 }
@@ -226,24 +256,36 @@ pub fn trace_leak(ws: &Workspace, leaked: &Path, asset: Option<&str>) -> Result<
 }
 
 fn trace_one(ws: &Workspace, a: &Asset, leaked: &Path) -> Result<TraceResult> {
-    need_image(&a.kind)?;
+    need_supported(&a.kind)?;
     let issued = ws.issues(a.id)?;
     if issued.is_empty() {
         return err(format!("asset '{}' has no issued copies", a.name));
     }
     let mut warnings = vec![];
-    let (det, reg) = detect_image(&read_image(leaked)?, &read_image(&a.orig_path)?, ws.layout_seed(a.id), &image_params(a));
-    let evidence = json!({"alignment": reg.method, "overlap": (det.valid_fraction * 100.0).round() / 100.0});
-    if det.valid_fraction < 0.3 {
-        warnings.push("Less than 30% of the leaked image overlaps the original.".to_string());
-    }
-    let cover = det.valid_fraction;
+    let r2 = |x: f64| (x * 100.0).round() / 100.0;
+    let (bits, confidence, cover, evidence) = if a.kind == "image" {
+        let (det, reg) = detect_image(&read_image(leaked)?, &read_image(&a.orig_path)?, ws.layout_seed(a.id), &image_params(a));
+        if det.valid_fraction < 0.3 {
+            warnings.push("Less than 30% of the leaked image overlaps the original.".to_string());
+        }
+        let ev = json!({"alignment": reg.method, "overlap": r2(det.valid_fraction)});
+        (det.bits, det.confidence, det.valid_fraction, ev)
+    } else {
+        let det = detect_audio(leaked, &a.orig_path, ws.layout_seed(a.id), &audio_params(a), a.m)?;
+        if det.align < 0.5 {
+            warnings.push(
+                "Audio alignment is weak. The file may have been sped up, slowed down, or changed too much.".into(),
+            );
+        }
+        let ev = json!({"offset_samples": det.offset, "alignment_score": r2(det.align), "symbols_with_evidence": r2(det.coverage)});
+        (det.bits, det.confidence, det.coverage, ev)
+    };
 
     let code = code_for(ws, a);
-    let thr = accusation_threshold(a.max_receivers, a.m, a.eps, Some(&det.confidence));
+    let thr = accusation_threshold(a.max_receivers, a.m, a.eps, Some(&confidence));
     let mut ranking: Vec<(String, f64)> = issued
         .iter()
-        .map(|i| (i.name.clone(), code.score(i.user_index, &det.bits, Some(&det.confidence))))
+        .map(|i| (i.name.clone(), code.score(i.user_index, &bits, Some(&confidence))))
         .collect();
     ranking.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
     let flagged: Vec<String> = ranking.iter().filter(|(_, s)| *s > thr).map(|(n, _)| n.clone()).collect();

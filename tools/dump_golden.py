@@ -43,6 +43,55 @@ def synthetic_bgr(height: int, width: int) -> np.ndarray:
     return img
 
 
+def hash_noise(n: int, salt: int) -> np.ndarray:
+    """Deterministic noise in [-1, 1) from integer maths only, so Rust can rebuild it exactly."""
+    i = (np.arange(n, dtype=np.uint64) + np.uint64(salt)) & np.uint64(0xFFFFFFFF)
+    h = (i * np.uint64(2654435761)) & np.uint64(0xFFFFFFFF)
+    h ^= h >> np.uint64(15)
+    h = (h * np.uint64(2246822519)) & np.uint64(0xFFFFFFFF)
+    h ^= h >> np.uint64(13)
+    return (h.astype(np.float64) / 2.0**32) * 2.0 - 1.0
+
+
+def synth_audio(n: int, sr: int) -> np.ndarray:
+    t = np.arange(n, dtype=np.float64) / sr
+    env = 0.6 + 0.4 * np.sin(2 * np.pi * 0.5 * t)
+    x = (0.3 * np.sin(2 * np.pi * 220 * t) * env + 0.2 * np.sin(2 * np.pi * 1375 * t + 1.0)
+         + 0.15 * np.sin(2 * np.pi * 3100 * t + 2.0) * env[::-1] + 0.1 * hash_noise(n, 0))
+    return x.astype(np.float32)
+
+
+def audio_golden() -> dict:
+    from vfp.audio.align import _prep, find_offset
+    from vfp.audio.common import AudioParams, capacity
+    from vfp.audio.detect import detect_arrays
+    from vfp.audio.embed import embed_audio_array
+
+    sr, secs, seed = 16000, 14, 555
+    p = AudioParams(nslots=8)
+    x = synth_audio(secs * sr, sr)
+    cap = capacity(secs, p)
+    sym = np.array([((i * 2654435761) >> 5) & 1 for i in range(cap)], np.uint8)
+    y = embed_audio_array(x[None, :], sr, sym, seed, p)[0]
+
+    start, length = sr * 1 + 357, 10 * sr
+    leak = (0.5 * y[start:start + length].astype(np.float64)
+            + 0.01 * hash_noise(length, 12345)).astype(np.float32)
+    off, score = find_offset(x, leak, sr)
+    det = detect_arrays(x, leak, sr, float(secs), seed, p, cap)
+    return {
+        "sr": sr, "secs": secs, "seed": str(seed), "nslots": 8, "cap": cap,
+        "symbols": sym.tolist(),
+        "x_sub": x[::97].tolist(), "y_sub": y[::97].tolist(),
+        "max_abs_change": float(np.abs(y - x).max()),
+        "prep_sub": _prep(x, sr)[::101].tolist(),
+        "leak_start": start, "leak_len": length,
+        "offset": int(off), "offset_score": float(score),
+        "z": det.z.tolist(), "bits": det.bits.tolist(), "coverage": det.coverage,
+        "det_offset": int(det.info["offset"]), "det_gain": float(det.info["gain"]),
+    }
+
+
 def main() -> None:
     g: dict = {"master_key_hex": MASTER.hex()}
 
@@ -122,6 +171,8 @@ def main() -> None:
         "auto_nslots": [{"dur": d, "target": t, "n": audio_auto_nslots(d, ap, t)}
                         for d, t in ((10.0, 2455), (173.0, 2455), (3.0, 2455), (600.0, 2455))],
     }
+
+    g["audio"] = audio_golden()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(g, indent=1))
