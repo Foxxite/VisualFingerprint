@@ -381,3 +381,26 @@ fn zero_knowledge_rollback_is_detected() {
     drop(srv);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn zero_knowledge_parallel_calls_on_one_cache_do_not_clash() {
+    use vfp_core::backend::SealedBackend;
+    use vfp_core::vault::{KdfParams, Protection, VaultFile};
+    let tmp = std::env::temp_dir().join(format!("vfp_zkpar_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let srv = start_with(&tmp.join("data"), 8, &[]);
+    let (vf, dek) = VaultFile::create(PASS, Protection::ZeroKnowledge, KdfParams::TEST).unwrap();
+    let a = SealedBackend::create(&srv.url, &srv.admin, &vf, dek.clone(), tmp.join("cache_a")).unwrap();
+    a.add_receiver("one", "").unwrap();
+    // a second device with an empty cache. The app asks for receivers and assets at the same time.
+    let b = SealedBackend::open(&srv.url, &srv.admin, dek, tmp.join("cache_b"));
+    std::thread::scope(|s| {
+        let bref = &b;
+        let hs: Vec<_> = (0..6).map(|i| s.spawn(move || if i % 2 == 0 { bref.receivers().map(|r| r.len()) } else { bref.assets().map(|r| r.len()) })).collect();
+        for h in hs {
+            h.join().unwrap().unwrap();
+        }
+    });
+    drop(srv);
+    let _ = std::fs::remove_dir_all(&tmp);
+}

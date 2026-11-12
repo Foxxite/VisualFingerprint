@@ -43,7 +43,7 @@ export default function Passphrase({ onValid }: { onValid: (p: string | null) =>
         <div style={{ width: `${pct}%`, background: s?.ok ? "var(--ok)" : "var(--warn)" }} />
       </div>
       <p className="muted" style={{ margin: "4px 0" }}>
-        {s ? `${Math.round(s.bits)} bits. ${s.ok ? "Strong enough." : "Need 64 bits."}` : "Use 7 random words, or press the button."}
+        {s ? `${Math.round(s.bits)}${s.capped ? "+" : ""} bits. ${s.ok ? "Strong enough." : "Need 64 bits."}` : "Use 8 random words, or press the button."}
       </p>
       {s && !s.ok && s.advice.map((t) => <div key={t} className="warn">{t}</div>)}
       <label>Type it again</label>

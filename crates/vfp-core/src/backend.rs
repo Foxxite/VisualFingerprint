@@ -306,6 +306,12 @@ mod remote {
     const B_DB: &str = "vfp.db.enc";
     const B_PREFIX: &str = "o-";
     const DB_AAD: &[u8] = b"blob:vfp.db";
+    /// One sync or job at a time in this process: the cache files are shared and the temp names are fixed.
+    static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn cache_lock() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Key in `sync.json` for the newest database generation this device has seen.
     const GEN_KEY: &str = "_gen";
 
@@ -596,22 +602,26 @@ mod remote {
         }
 
         fn receivers(&self) -> Result<Vec<ReceiverInfo>> {
+            let _g = cache_lock();
             self.pull()?;
             self.local().receivers()
         }
 
         fn add_receiver(&self, name: &str, note: &str) -> Result<()> {
+            let _g = cache_lock();
             self.pull()?;
             self.local().add_receiver(name, note)?;
             self.push()
         }
 
         fn assets(&self) -> Result<Vec<AssetInfo>> {
+            let _g = cache_lock();
             self.pull()?;
             self.local().assets()
         }
 
         fn add_asset(&self, path: &Path, name: Option<&str>, opts: &PlanOptions) -> Result<(AssetInfo, Plan)> {
+            let _g = cache_lock();
             self.pull()?;
             let r = self.local().add_asset(path, name, opts)?;
             self.push()?;
@@ -619,6 +629,7 @@ mod remote {
         }
 
         fn mark(&self, asset: &str, receivers: &[String], outdir: &Path, progress: Progress) -> Result<Vec<(String, PathBuf)>> {
+            let _g = cache_lock();
             let list = self.pull()?;
             self.fetch_originals(&list, Some(asset))?;
             let r = self.local().mark(asset, receivers, outdir, progress)?;
@@ -627,6 +638,7 @@ mod remote {
         }
 
         fn trace(&self, leaked: &Path, asset: Option<&str>) -> Result<TraceResult> {
+            let _g = cache_lock();
             let list = self.pull()?;
             self.fetch_originals(&list, asset)?;
             self.local().trace(leaked, asset)

@@ -7,7 +7,7 @@ export interface AppState {
   mode: Mode; place: string; server_url: string | null; home: string;
   encrypted: boolean; locked: boolean; needs_vault: boolean; zero_knowledge: boolean;
 }
-export interface Strength { bits: number; ok: boolean; advice: string[] }
+export interface Strength { bits: number; ok: boolean; capped: boolean; advice: string[] }
 export interface Receiver { id: number; name: string; note: string }
 export interface Asset { id: number; name: string; kind: string; m: number; max_receivers: number; copies: number }
 export interface Plan { kind: string; m: number; guaranteed_colluders: number; notes: string[] }

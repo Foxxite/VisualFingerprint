@@ -24,6 +24,8 @@ pub struct Strength {
     pub shannon_bits: f64,
     pub guess_bits: f64,
     pub ok: bool,
+    /// The guess estimate hit its ceiling (2^64), so the real strength is at least `bits`.
+    pub capped: bool,
     /// Plain-word advice. Empty when the passphrase is fine.
     pub advice: Vec<String>,
 }
@@ -52,6 +54,9 @@ pub fn assess(passphrase: &str) -> Strength {
     let len = passphrase.chars().count();
     let shannon_bits = shannon_per_char(passphrase) * len as f64;
     let guess_bits = if passphrase.is_empty() { 0.0 } else { zxcvbn::zxcvbn(passphrase, &[]).guesses_log10() * std::f64::consts::LOG2_10 };
+    // zxcvbn counts guesses in a u64, so its estimate stops at 64 bits. Allow for rounding at that ceiling.
+    let capped = guess_bits >= 63.9;
+    let guess_bits = if capped { guess_bits.max(MIN_BITS) } else { guess_bits };
     let bits = shannon_bits.min(guess_bits);
     let mut advice = Vec::new();
     if len < MIN_CHARS {
@@ -63,7 +68,7 @@ pub fn assess(passphrase: &str) -> Strength {
     if guess_bits < MIN_BITS {
         advice.push("This is easy to guess (common words, names, dates or patterns). Use several unrelated words, or press \"Make one for me\".".to_string());
     }
-    Strength { bits, shannon_bits, guess_bits, ok: len >= MIN_CHARS && bits >= MIN_BITS, advice }
+    Strength { bits, shannon_bits, guess_bits, ok: len >= MIN_CHARS && bits >= MIN_BITS, capped: capped && bits >= guess_bits, advice }
 }
 
 /// `Ok` when the passphrase is strong enough. The error text is the advice.

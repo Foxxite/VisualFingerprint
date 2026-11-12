@@ -25,7 +25,7 @@ data key --HKDF--> sub-keys: files, master, db-fields, db-index
 - Changing the passphrase re-wraps the data key. No file is re-encrypted.
 - The data key lives in memory only. The app wipes it on Lock and after 15 minutes without use.
 - **The passphrase gate**: at least 64 bits and 12 characters. The score is the lower of a Shannon estimate
-  and a pattern-based guess estimate (zxcvbn). The "Make one for me" button makes 7 random words.
+  and a pattern-based guess estimate (zxcvbn). The "Make one for me" button makes 8 random words.
 
 ## Two places, same format
 
