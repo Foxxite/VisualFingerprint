@@ -49,14 +49,14 @@ cargo tauri android build --apk         # release APK (needs a signing key)
 
 ## Known gaps (do these before you trust it)
 
-- **Audio and video (works, video tested on the phone).** The core runs the `ffmpeg` and `ffprobe` programs.
+- **Audio and video (works, both tested on the phone).** The core runs the `ffmpeg` and `ffprobe` programs.
   The APK carries them as `libffmpeg.so` and `libffprobe.so` (arm64). Android only lets an app run programs from
   its native library folder, so Gradle uses `useLegacyPackaging = true` to extract them. Run
   `scripts/fetch-android-ffmpeg.sh` before the build. It downloads FFmpeg 9.0 from
   hzw1199/Android-FFmpeg-Prebuilt and checks the SHA256. The files are not in git. They add about 31 MB to the APK.
   That build is LGPL-2.1 and has no x264. So on Android the video copies use the built-in `mpeg4` encoder
   (`VFP_VIDEO_ENCODER=mpeg4`, set by the app). A test copy made this way was traced to the right receiver.
-  Audio on the phone is not tested yet. Keep the LGPL notice and a source offer when you ship the APK.
+  A wav was registered, marked and traced to the right receiver on the phone too. Keep the LGPL notice and a source offer when you ship the APK.
 - **File picker and save dialog (fixed, tested on the phone).** Android returns `content://` addresses, not
   paths. The Rust side (`tauri-plugin-fs`) opens them: a picked file is copied into app cache with its real
   extension (found from the first bytes) and used from there. Results are written to the chosen address.
