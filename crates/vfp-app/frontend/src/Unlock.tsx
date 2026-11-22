@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, AppState, errText } from "./api";
+import Workspaces from "./Workspaces";
 
 /// Shown when the workspace or the server vault is locked. Also creates a vault on a new server.
 export default function Unlock({ state, onDone }: { state: AppState; onDone: () => void }) {
@@ -44,6 +45,10 @@ export default function Unlock({ state, onDone }: { state: AppState; onDone: () 
           </div>
         </div>
         {msg && <p className="err">{msg}</p>}
+        <details style={{ marginTop: 28 }}>
+          <summary>Not the right workspace? Open another one</summary>
+          <Workspaces onChange={onDone} />
+        </details>
       </div>
     </main>
   );
